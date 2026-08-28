@@ -1,6 +1,7 @@
 """图谱 CRUD 与构建任务端点。"""
 from __future__ import annotations
 
+import json
 import uuid as _uuid
 
 from fastapi import APIRouter, HTTPException
@@ -59,8 +60,6 @@ async def get_graph(graph_id: str):
     if meta is None:
         raise HTTPException(status_code=404, detail="graph not found")
     node_count, edge_count = await svc.neo4j.count_nodes_edges(graph_id)
-    import json
-
     ontology_raw = meta.get("ontology_json")
     ontology = json.loads(ontology_raw) if ontology_raw else None
     return _ok(
@@ -89,26 +88,24 @@ async def delete_graph(graph_id: str):
 
 @router.post("/{graph_id}/build")
 async def build_graph(graph_id: str, req: BuildRequest):
-    """启动构建任务。缺省 ontology 时管道自动生成。"""
-    from app.main import get_uploaded_file
+    """启动构建任务。缺省 ontology 时管道自动生成；消费全部已上传文档。"""
+    from app.main import get_uploaded_files
 
     svc = _services()
     meta = await svc.neo4j.get_graph_meta(graph_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="graph not found")
-    uploaded = get_uploaded_file(graph_id)
-    if uploaded is None:
+    files = get_uploaded_files(graph_id)
+    if not files:
         raise HTTPException(
             status_code=400,
             detail="未上传文档：请先调用 /api/graphs/{graph_id}/documents 上传",
         )
-    file_bytes, filename = uploaded
 
     task_id = new_task_id()
     params = BuildParams(
         graph_id=graph_id,
-        file_bytes=file_bytes,
-        filename=filename,
+        files=files,
         purpose=req.purpose,
         ontology=req.ontology,
         chunk_size=req.chunk_size,

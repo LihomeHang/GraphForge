@@ -7,7 +7,7 @@
 
     <!-- 步骤指示条 -->
     <div class="wb-steps">
-      <div class="step" :class="{ done: !!file }">
+      <div class="step" :class="{ done: staged.length > 0 }">
         <span class="dot">1</span><span>上传文档</span>
       </div>
       <span class="arrow"></span>
@@ -25,37 +25,53 @@
       <div class="wb-col">
         <div
           class="dropzone"
-          :class="{ filled: file, dragover }"
+          :class="{ dragover }"
           @click="pick"
           @dragover.prevent="dragover = true"
           @dragleave="dragover = false"
           @drop.prevent="onDrop"
         >
-          <input ref="fileInput" type="file" accept=".pdf,.md,.txt,.markdown" hidden @change="onFile" />
-          <template v-if="file">
-            <span class="file-icon">📄</span>
-            <div class="file-meta">
-              <strong>{{ file.name }}</strong>
-              <span class="muted">{{ fmtSize(file.size) }}</span>
-            </div>
-            <button class="icon-btn" title="移除文件" @click.stop="clearFile">✕</button>
-          </template>
-          <template v-else>
-            <span class="file-icon">⬆️</span>
-            <div class="file-meta">
-              <strong>拖拽文件到此处，或点击选择</strong>
-              <span class="muted">支持 PDF / Markdown / 纯文本</span>
-            </div>
-          </template>
+          <input ref="fileInput" type="file" accept=".pdf,.md,.txt,.markdown" multiple hidden @change="onFile" />
+          <span class="file-icon">⬆️</span>
+          <div class="file-meta">
+            <strong>拖拽文件到此处，或点击选择（可多选）</strong>
+            <span class="muted">支持 PDF / Markdown / 纯文本 · 多文件合并构建一个图谱</span>
+          </div>
         </div>
 
+        <!-- 待上传队列 -->
+        <div v-if="pending.length" class="file-list">
+          <div v-for="(f, i) in pending" :key="'p' + i" class="file-item pending">
+            <span class="file-icon small">📄</span>
+            <div class="file-meta">
+              <strong>{{ f.name }}</strong>
+              <span class="muted">{{ fmtSize(f.size) }}</span>
+            </div>
+            <button class="icon-btn" title="移除" @click="pending.splice(i, 1)">✕</button>
+          </div>
+          <button class="upload-now" :disabled="uploading" @click="uploadAll">
+            {{ uploading ? '上传中…' : `⬆ 上传 ${pending.length} 个文件` }}
+          </button>
+        </div>
+
+        <!-- 已暂存（服务端） -->
+        <div v-if="staged.length" class="file-list">
+          <div v-for="name in staged" :key="name" class="file-item">
+            <span class="file-icon small">✅</span>
+            <div class="file-meta">
+              <strong>{{ name }}</strong>
+              <span class="muted">已就绪，将参与构建</span>
+            </div>
+            <button class="icon-btn" title="从暂存区移除" @click="removeStaged(name)">✕</button>
+          </div>
+        </div>
         <input v-model="purpose" class="purpose" placeholder="分析目的（可选，帮助生成更贴合的本体）" />
 
         <div class="actions">
-          <button :disabled="!file || busy" @click="genOntology">生成预览本体</button>
-          <button class="primary" :disabled="!file || busy" @click="buildDirect">直接构建图谱</button>
+          <button :disabled="!hasDocs || busy" @click="genOntology">生成预览本体</button>
+          <button class="primary" :disabled="!hasDocs || busy" @click="buildDirect">直接构建图谱</button>
         </div>
-        <p class="muted hint">「直接构建」自动生成本体并开始抽取；想先审阅本体请先生成预览。</p>
+        <p class="muted hint">「直接构建」自动生成本体并开始抽取；多个文件将合并为一个语料参与构建。</p>
       </div>
 
       <!-- 右：本体预览 -->
@@ -105,13 +121,15 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({ graph: Object })
 const emit = defineEmits(['refresh'])
 
-const file = ref(null)
+const pending = ref([]) // 待上传文件（File 对象）
+const staged = ref([]) // 服务端已暂存文件名
+const uploading = ref(false)
 const purpose = ref('')
 const ontology = ref(null)
 const task = ref(null)
@@ -119,29 +137,64 @@ const busy = ref(false)
 const error = ref('')
 const dragover = ref(false)
 const fileInput = ref(null)
+const hasDocs = computed(() => staged.value.length > 0)
 let pollTimer = null
 
-function onFile(e) {
-  file.value = e.target.files[0] || null
-  e.target.value = ''
+function addFiles(fileList) {
+  for (const f of fileList) {
+    if (!pending.value.some((p) => p.name === f.name && p.size === f.size)) {
+      pending.value.push(f)
+    }
+  }
   ontology.value = null
+}
+
+function onFile(e) {
+  addFiles(e.target.files || [])
+  e.target.value = ''
 }
 
 function onDrop(e) {
   dragover.value = false
-  const f = e.dataTransfer.files && e.dataTransfer.files[0]
-  if (!f) return
-  file.value = f
-  ontology.value = null
+  const files = e.dataTransfer && e.dataTransfer.files
+  if (files && files.length) addFiles(files)
 }
 
 function pick() {
   fileInput.value?.click()
 }
 
-function clearFile() {
-  file.value = null
-  ontology.value = null
+async function refreshStaged() {
+  try {
+    staged.value = (await api.listDocuments(props.graph.graph_id)).filenames || []
+  } catch {
+    staged.value = []
+  }
+}
+
+async function uploadAll() {
+  if (!pending.value.length) return
+  uploading.value = true
+  error.value = ''
+  try {
+    await api.uploadDocument(props.graph.graph_id, pending.value, purpose.value)
+    pending.value = []
+    await refreshStaged()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function removeStaged(name) {
+  error.value = ''
+  try {
+    await api.removeDocument(props.graph.graph_id, name)
+    await refreshStaged()
+  } catch (e) {
+    error.value = e.message
+  }
 }
 
 function fmtSize(n) {
@@ -154,7 +207,7 @@ async function genOntology() {
   busy.value = true
   error.value = ''
   try {
-    ontology.value = await api.generateOntology(props.graph.graph_id, file.value, purpose.value)
+    ontology.value = await api.generateOntology(props.graph.graph_id, purpose.value)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -198,6 +251,7 @@ async function poll() {
   }
 }
 
+onMounted(refreshStaged)
 onUnmounted(() => clearTimeout(pollTimer))
 </script>
 
@@ -317,6 +371,28 @@ onUnmounted(() => clearTimeout(pollTimer))
 
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .hint { font-size: 12px; line-height: 1.5; }
+
+/* 文件列表（待上传 / 已暂存） */
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #fff;
+}
+.file-item.pending { background: #fafbff; }
+.file-icon.small { font-size: 15px; }
+.upload-now {
+  align-self: flex-start;
+  border-style: dashed;
+}
 
 /* 本体预览 */
 .ontology-box {

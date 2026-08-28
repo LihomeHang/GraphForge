@@ -42,8 +42,8 @@ class TaskRegistry:
 @dataclass
 class BuildParams:
     graph_id: str
-    file_bytes: bytes
-    filename: str
+    # 多文件支持：[(bytes, filename), ...]，解析后按上传顺序拼接
+    files: list[tuple[bytes, str]]
     purpose: str = ""
     ontology: dict | None = None  # 内联本体（来自同步生成结果）
     chunk_size: int | None = None
@@ -89,13 +89,18 @@ async def run_build(task_id: str, params: BuildParams, svc: Services) -> None:
 async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     cfg = svc.config
 
-    # ① 解析
+    # ① 解析（多文件按上传顺序拼接）
     task.status = TaskStatus.parsing
     task.stage = "parsing"
     task.progress = 0.05
-    task.message = f"解析 {params.filename}"
+    task.message = f"解析 {len(params.files)} 个文档"
     await svc.tasks.update_task(task)
-    text = parser.parse_bytes(params.file_bytes, params.filename)
+    texts = []
+    for file_bytes, filename in params.files:
+        texts.append(parser.parse_bytes(file_bytes, filename))
+    text = "\n\n".join(t for t in texts if t.strip())
+    if not text.strip():
+        raise ValueError("文档内容为空，无法构建图谱")
 
     # ② 切块
     task.status = TaskStatus.chunking

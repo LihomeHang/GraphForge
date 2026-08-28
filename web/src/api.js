@@ -21,9 +21,9 @@ export const api = {
   getGraph: (id) => request('GET', `/graphs/${id}`),
   deleteGraph: (id) => request('DELETE', `/graphs/${id}`),
   // 文档
-  uploadDocument: (id, file, purpose) => {
+  uploadDocument: (id, fileList, purpose) => {
     const fd = new FormData()
-    fd.append('file', file)
+    for (const f of fileList) fd.append('files', f)
     fd.append('purpose', purpose)
     return fetch(`${BASE}/graphs/${id}/documents`, { method: 'POST', body: fd })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
@@ -32,17 +32,10 @@ export const api = {
         return d.data
       })
   },
-  generateOntology: (id, file, purpose) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('purpose', purpose)
-    return fetch(`${BASE}/graphs/${id}/ontology`, { method: 'POST', body: fd })
-      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => {
-        if (!ok || d.success === false) throw new Error(d.detail || '本体生成失败')
-        return d.data
-      })
-  },
+  listDocuments: (id) => request('GET', `/graphs/${id}/documents`),
+  removeDocument: (id, filename) => request('DELETE', `/graphs/${id}/documents/${encodeURIComponent(filename)}`),
+  generateOntology: (id, purpose) =>
+    request('POST', `/graphs/${id}/ontology/staged`, { purpose }),
   // 构建
   build: (id, payload) => request('POST', `/graphs/${id}/build`, payload),
   getTask: (taskId) => request('GET', `/tasks/${taskId}`),

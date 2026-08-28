@@ -2,6 +2,7 @@
 import io
 import json
 import time
+import urllib.error
 import urllib.request
 
 BASE = "http://localhost:8080/api"
@@ -27,15 +28,18 @@ def upload(path, filename, content, purpose=""):
     boundary = "----graphforge-demo"
     part = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n{purpose}\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{filename}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
     r = urllib.request.Request(
         BASE + path, data=part, method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
-    with urllib.request.urlopen(r) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(r) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"上传失败 {e.code} {path}: {e.read().decode()[:300]}")
 
 
 text = """中色股份（000758.SZ）是中国有色矿业集团控股的上市公司，实际控制人为国务院国资委。
@@ -53,7 +57,9 @@ print("graph_id:", gid)
 
 print("== 2. 上传文档 + 生成本体 ==")
 upload(f"/graphs/{gid}/documents", "demo.txt", text.encode("utf-8"), "梳理股权与业务关系")
-ont = upload(f"/graphs/{gid}/ontology", "demo.txt", text.encode("utf-8"), "梳理股权与业务关系")
+ont = req("POST", f"/graphs/{gid}/ontology/staged", {"purpose": "梳理股权与业务关系"})
+if "data" not in ont:
+    raise SystemExit(f"本体生成失败: {ont}")
 print("实体类型:", [et["name"] for et in ont["data"]["entity_types"]])
 print("关系类型:", [et["name"] for et in ont["data"]["edge_types"]])
 

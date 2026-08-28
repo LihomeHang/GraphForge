@@ -21,7 +21,8 @@ from app.storage.tasks import TaskStore
 logger = structlog.get_logger("graphforge")
 
 _services: Services | None = None
-_uploads: dict[str, tuple[bytes, str]] = {}
+# graph_id -> [(bytes, filename), ...]；多文件构建同一图谱，按上传顺序拼接
+_uploads: dict[str, list[tuple[bytes, str]]] = {}
 
 
 def get_services() -> Services:
@@ -30,11 +31,29 @@ def get_services() -> Services:
 
 
 def store_uploaded_file(graph_id: str, content: bytes, filename: str) -> None:
-    _uploads[graph_id] = (content, filename)
+    _uploads.setdefault(graph_id, []).append((content, filename))
 
 
-def get_uploaded_file(graph_id: str) -> tuple[bytes, str] | None:
-    return _uploads.get(graph_id)
+def get_uploaded_files(graph_id: str) -> list[tuple[bytes, str]]:
+    """返回已暂存文件列表（filename, bytes 按上传顺序）。"""
+    return _uploads.get(graph_id, [])
+
+
+def list_uploaded_filenames(graph_id: str) -> list[str]:
+    return [name for _, name in _uploads.get(graph_id, [])]
+
+
+def remove_uploaded_file(graph_id: str, filename: str) -> bool:
+    files = _uploads.get(graph_id, [])
+    for i, (_, name) in enumerate(files):
+        if name == filename:
+            del files[i]
+            return True
+    return False
+
+
+def clear_uploaded_files(graph_id: str) -> None:
+    _uploads.pop(graph_id, None)
 
 
 def configure_logging() -> None:

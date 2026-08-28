@@ -203,11 +203,12 @@ def test_full_build_flow(client):
     # 创建图
     graph_id = client.post("/api/graphs", json={"name": "流程图"}).json()["data"]["graph_id"]
 
-    # 上传文档
-    files = {"file": ("doc.txt", io.BytesIO("张三在ACME公司工作。".encode("utf-8")), "text/plain")}
+    # 上传文档（单文件，兼容写法：files 字段列表）
+    files = [("files", ("doc.txt", io.BytesIO("张三在ACME公司工作。".encode("utf-8")), "text/plain"))]
     r = client.post(f"/api/graphs/{graph_id}/documents", files=files, data={"purpose": "人员关系"})
     assert r.status_code == 200
-    assert r.json()["data"]["chars"] > 0
+    assert r.json()["data"]["count"] == 1
+    assert r.json()["data"]["files"][0]["chars"] > 0
 
     # 生成本体（同步）
     files = {"file": ("doc.txt", io.BytesIO("张三在ACME公司工作。".encode("utf-8")), "text/plain")}
@@ -249,3 +250,92 @@ def test_full_build_flow(client):
     r = client.get(f"/api/graphs/{graph_id}/export/mirofish")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
+
+
+def test_multi_file_build_flow(client):
+    """多文件上传 → 列表 → 构建合并 → 单文件删除 → 再构建。"""
+    import io
+    import time
+
+    graph_id = client.post("/api/graphs", json={"name": "多文件图"}).json()["data"]["graph_id"]
+
+    # 一次请求上传两个文件
+    files = [
+        ("files", ("a.txt", io.BytesIO("张三在ACME公司工作。".encode("utf-8")), "text/plain")),
+        ("files", ("b.txt", io.BytesIO("李四也在ACME公司工作。".encode("utf-8")), "text/plain")),
+    ]
+    r = client.post(f"/api/graphs/{graph_id}/documents", files=files, data={})
+    assert r.status_code == 200
+    assert r.json()["data"]["count"] == 2
+
+    # 分批再传一个，验证累加语义
+    r = client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[("files", ("c.txt", io.BytesIO("张三和李四是同事。".encode("utf-8")), "text/plain"))],
+    )
+    assert r.status_code == 200
+
+    # 文件列表
+    r = client.get(f"/api/graphs/{graph_id}/documents")
+    assert r.status_code == 200
+    assert r.json()["data"]["filenames"] == ["a.txt", "b.txt", "c.txt"]
+
+    # 删除单个文件
+    r = client.delete(f"/api/graphs/{graph_id}/documents/b.txt")
+    assert r.status_code == 200
+    r = client.get(f"/api/graphs/{graph_id}/documents")
+    assert r.json()["data"]["filenames"] == ["a.txt", "c.txt"]
+
+    # 构建（自动本体）：两文件内容拼接抽取
+    r = client.post(f"/api/graphs/{graph_id}/build", json={})
+    assert r.status_code == 200
+    task_id = r.json()["data"]["task_id"]
+
+    from app.api.graphs import _services
+
+    svc = _services()
+    for _ in range(100):
+        if not svc.registry.is_running(task_id):
+            break
+        time.sleep(0.05)
+    task = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(svc.tasks.get_task(task_id))
+    assert task is not None, "任务未创建"
+    assert task.status.value == "completed", f"任务失败: {task.error}"
+    # 进度消息应反映多文件解析
+    nodes = client.get(f"/api/graphs/{graph_id}/nodes").json()["data"]
+    assert any(n["name"] == "张三" for n in nodes)
+
+
+def test_upload_unsupported_type_rejected(client):
+    """不支持扩展名的文件返回 400，且不进入暂存区。"""
+    import io
+
+    graph_id = client.post("/api/graphs", json={"name": "拒绝图"}).json()["data"]["graph_id"]
+    r = client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[("files", ("x.exe", io.BytesIO(b"MZ..."), "application/octet-stream"))],
+    )
+    assert r.status_code == 400
+    r = client.get(f"/api/graphs/{graph_id}/documents")
+    assert r.json()["data"]["filenames"] == []
+
+
+def test_ontology_from_staged_files(client):
+    """基于暂存多文件生成本体；暂存区为空时返回 400。"""
+    import io
+
+    graph_id = client.post("/api/graphs", json={"name": "暂存本体图"}).json()["data"]["graph_id"]
+    # 空暂存区 → 400
+    r = client.post(f"/api/graphs/{graph_id}/ontology/staged", json={"purpose": ""})
+    assert r.status_code == 400
+
+    # 上传两个文件后生成
+    files = [
+        ("files", ("a.txt", io.BytesIO("张三在ACME公司工作。".encode("utf-8")), "text/plain")),
+        ("files", ("b.txt", io.BytesIO("李四负责销售业务。".encode("utf-8")), "text/plain")),
+    ]
+    client.post(f"/api/graphs/{graph_id}/documents", files=files, data={})
+    r = client.post(f"/api/graphs/{graph_id}/ontology/staged", json={"purpose": "人员关系"})
+    assert r.status_code == 200
+    ontology = r.json()["data"]
+    assert any(et["name"] == "Person" for et in ontology["entity_types"])
