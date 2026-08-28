@@ -69,6 +69,10 @@ uv run pytest tests -q
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 切块参数（500 / 50） |
 | `LLM_CONCURRENCY` | 抽取并发（4） |
 | `RESOLVE_SIM_THRESHOLD` | 消歧嵌入相似阈值（0.85） |
+| `EMBEDDING_DIM` | 嵌入维度；缺省自动探测（mock 模式为 32） |
+| `QDRANT_API_KEY` | Qdrant 开启鉴权时必填 |
+| `DATA_DIR` | SQLite 任务/缓存目录（`./data`） |
+| `LLM_TEMPERATURE` / `EXTRACT_MAX_RETRY` / `ENTITY_TYPE_LIMIT` / `EDGE_TYPE_LIMIT` / `NEO4J_BATCH_SIZE` / `QDRANT_BATCH_SIZE` | 高级调优项，有合理默认值 |
 
 ## 架构
 

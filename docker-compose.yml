@@ -18,6 +18,9 @@ services:
       CHUNK_SIZE: ${CHUNK_SIZE:-500}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-50}
       LLM_CONCURRENCY: ${LLM_CONCURRENCY:-4}
+      RESOLVE_SIM_THRESHOLD: ${RESOLVE_SIM_THRESHOLD:-0.85}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
     volumes:
       - app-data:/app/data
     depends_on:
