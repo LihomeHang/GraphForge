@@ -112,7 +112,7 @@ SQLite（`data/tasks.db`，自动建目录）：`tasks(task_id PK, graph_id, sta
 | GET | `/api/graphs/{graph_id}` | 图详情（节点/边计数、本体、状态） |
 | DELETE | `/api/graphs/{graph_id}` | 删图（连带 Qdrant collection） |
 | POST | `/api/graphs/{graph_id}/ontology` | 生成本体（multipart 文件 + 表单 purpose），同步返回本体 JSON |
-| POST | `/api/graphs/{graph_id}/build` | 启动构建任务（JSON：可选 ontology 覆盖、chunk 参数）；返回 task_id |
+| POST | `/api/graphs/{graph_id}/build` | 启动构建任务；JSON 体：`ontology`（可选，内联本体对象，来自上一步同步生成结果）、`chunk_size`、`chunk_overlap`；缺省 ontology 时管道自动生成；返回 task_id |
 | GET | `/api/tasks/{task_id}` | 任务状态与进度 |
 | GET | `/api/graphs/{graph_id}/nodes` / `/edges` | 分页读节点/边（`offset/limit`，返回 Zep 风格结构） |
 | GET | `/api/graphs/{graph_id}/nodes/{uuid}` | 节点详情（含相关边与邻接节点） |
