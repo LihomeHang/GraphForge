@@ -1,10 +1,10 @@
-"""docker 全栈端到端演示脚本（对运行中的 8000 端口执行完整流程）。"""
+"""docker 全栈端到端演示脚本（对运行中的服务执行完整流程，默认宿主 8080）。"""
 import io
 import json
 import time
 import urllib.request
 
-BASE = "http://localhost:8000/api"
+BASE = "http://localhost:8080/api"
 
 
 def req(method, path, data=None, raw=False):

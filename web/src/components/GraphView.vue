@@ -36,7 +36,7 @@ const svgEl = ref(null)
 
 const PALETTE = ['#4f6ef7', '#30a46c', '#e5484d', '#f7a417', '#9b6ef7', '#0ea5b7', '#e4559f', '#7d8a99']
 
-typeColors = {}
+const typeColors = {}
 let colorIdx = 0
 function typeOf(n) {
   return (n.labels || []).find((l) => l !== 'Entity') || 'Entity'

@@ -20,14 +20,14 @@
 ```bash
 cp .env.example .env        # 填入 LLM_API_KEY 等
 docker compose up -d --build
-# 打开 http://localhost:8000
+# 打开 http://localhost:8080
 ```
 
 服务端口：
 
 | 服务 | 地址 |
 |------|------|
-| Web UI / API | http://localhost:8000 |
+| Web UI / API | http://localhost:8080 |
 | Neo4j Browser | http://localhost:7474（neo4j / graphforge-dev） |
 | Qdrant | http://localhost:6333 |
 
@@ -39,10 +39,10 @@ docker compose up -d --build
 # 后端（需本地或 docker 的 Neo4j/Qdrant）
 uv sync
 cp .env.example .env
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8080
 
 # 前端
-cd web && npm install && npm run dev   # http://localhost:5173，代理 /api 到 8000
+cd web && npm install && npm run dev   # http://localhost:5173，代理 /api 到 8080
 
 # 测试（不触网：mock LLM + mock embeddings）
 uv run pytest tests -q
