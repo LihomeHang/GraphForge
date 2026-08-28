@@ -65,9 +65,17 @@ function render() {
   const width = el.node().clientWidth || 600
   const height = 420
 
+  // d3.forceLink 要求边带 source/target 字段；后端字段是 *_node_uuid，先映射，
+  // 并过滤端点不在节点集中的悬空边（分页截断或数据不一致时防御），
+  // 同时复制对象避免 forceLink 把 source/target 替换成节点引用后污染原始数据
+  const uuidSet = new Set(nodes.value.map((n) => n.uuid))
+  const links = edges.value
+    .filter((e) => uuidSet.has(e.source_node_uuid) && uuidSet.has(e.target_node_uuid))
+    .map((e) => ({ ...e, source: e.source_node_uuid, target: e.target_node_uuid }))
+
   const factsByUuid = {}
-  for (const e of edges.value) {
-    for (const u of [e.source_node_uuid, e.target_node_uuid]) {
+  for (const e of links) {
+    for (const u of [e.source, e.target]) {
       ;(factsByUuid[u] ||= []).push(e.fact)
     }
   }
@@ -81,14 +89,14 @@ function render() {
 
   const sim = d3
     .forceSimulation(nodes.value)
-    .force('link', d3.forceLink(edges.value).id((d) => d.uuid).distance(110))
+    .force('link', d3.forceLink(links).id((d) => d.uuid).distance(110))
     .force('charge', d3.forceManyBody().strength(-260))
     .force('center', d3.forceCenter(width / 2, height / 2))
 
   const link = g
     .append('g')
     .selectAll('line')
-    .data(edges.value)
+    .data(links)
     .join('line')
     .attr('stroke', '#c9cfdb')
     .attr('stroke-width', 1.4)
@@ -96,7 +104,7 @@ function render() {
   const linkLabel = g
     .append('g')
     .selectAll('text')
-    .data(edges.value)
+    .data(links)
     .join('text')
     .text((d) => d.name)
     .attr('font-size', 9)
