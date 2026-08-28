@@ -1,0 +1,55 @@
+<template>
+  <header class="app-header">
+    <div class="logo"></div>
+    <h1>GraphForge</h1>
+    <span class="muted">文档 → 知识图谱 → 语义搜索</span>
+    <div style="flex: 1"></div>
+    <button v-if="currentGraph" @click="backToList">← 返回图列表</button>
+  </header>
+
+  <div class="container">
+    <!-- 区块 1：图列表 -->
+    <GraphList v-if="!currentGraph" @enter="enterGraph" />
+
+    <!-- 区块 2/3/4：图工作台 -->
+    <template v-else>
+      <Workbench :graph="currentGraph" @refresh="refreshGraph" />
+      <div class="row" style="align-items: flex-start; gap: 16px">
+        <div style="flex: 1.6; min-width: 0">
+          <GraphView :graph-id="currentGraph.graph_id" :reload-key="reloadKey" />
+        </div>
+        <div style="flex: 1; min-width: 0">
+          <SearchPanel :graph-id="currentGraph.graph_id" />
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+import GraphList from './components/GraphList.vue'
+import Workbench from './components/Workbench.vue'
+import GraphView from './components/GraphView.vue'
+import SearchPanel from './components/SearchPanel.vue'
+import { api } from './api'
+
+const currentGraph = ref(null)
+const reloadKey = ref(0)
+
+async function enterGraph(id) {
+  const g = await api.getGraph(id)
+  currentGraph.value = g
+  reloadKey.value++
+}
+
+async function refreshGraph() {
+  if (currentGraph.value) {
+    currentGraph.value = await api.getGraph(currentGraph.value.graph_id)
+  }
+}
+
+function backToList() {
+  currentGraph.value = null
+}
+</script>
