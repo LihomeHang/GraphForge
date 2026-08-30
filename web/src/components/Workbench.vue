@@ -69,10 +69,16 @@
 
         <div class="actions">
           <button :disabled="!hasDocs || busy || taskRunning" @click="genOntology">生成预览本体</button>
-          <button class="primary" :disabled="!hasDocs || busy || taskRunning" @click="buildDirect">直接构建图谱</button>
+          <button class="primary" :disabled="!hasDocs || busy || hasBuildHistory" @click="buildDirect">直接构建图谱</button>
         </div>
         <p class="muted hint">
-          {{ taskRunning ? '构建任务进行中，构建操作已锁定；可继续上传/移除文档，供下次构建使用。' : '「直接构建」自动生成本体并开始抽取；多个文件将合并为一个语料参与构建。' }}
+          {{
+            taskRunning
+              ? '构建任务进行中，构建操作已锁定；可继续上传/移除文档，供下次构建使用。'
+              : hasBuildHistory
+                ? '该图谱已有构建记录，「直接构建」已锁定（防止误触重复构建）；换本体重构建请用「生成预览本体 → 用此本体构建」。'
+                : '「直接构建」自动生成本体并开始抽取；多个文件将合并为一个语料参与构建。'
+          }}
         </p>
       </div>
 
@@ -148,6 +154,9 @@ const dragover = ref(false)
 const fileInput = ref(null)
 const hasDocs = computed(() => staged.value.length > 0)
 const taskRunning = computed(() => !!task.value && !['completed', 'failed'].includes(task.value.status))
+// 只要有构建记录就锁定「直接构建图谱」：防止全量构建完成后误触重新构建（重新生成本体会使块缓存全部失效，重复消耗额度）。
+// 再次构建走「生成预览本体 → 用此本体构建」，失败任务走「↻ 重试构建」；删除图谱重建后记录清零、按钮恢复。
+const hasBuildHistory = computed(() => !!task.value)
 let pollTimer = null
 
 function addFiles(fileList) {
