@@ -198,27 +198,30 @@ async def extract_chunks(
     semaphore = asyncio.Semaphore(config.llm_concurrency)
     warnings: list[str] = []
     results: list[ExtractionResult | None] = [None] * len(chunks)
+    done = 0  # 实际完成数：并发下完成顺序 ≠ 块序，必须计数保证进度单调不回退
 
     async def _work(i: int, chunk: str) -> None:
+        nonlocal done
         async with semaphore:
             key = chunk_hash(graph_id, ontology_json, chunk)
             cached = await task_store.get_extract_cache(key) if task_store else None
             if cached is not None:
                 results[i] = ExtractionResult.model_validate(cached)
-                return
-            result, error = await _extract_one(llm, chunk, ontology, ontology_json, config, task_store)
-            if result is None:
-                warnings.append(f"块 {i} 抽取失败已跳过: {error}")
-                logger.warning("块 %s 抽取失败已跳过: %s", i, error)
-                emit_task_log(f"块 {i} 抽取失败已跳过: {error}")
-                results[i] = ExtractionResult()
             else:
-                results[i] = result
-                # 空结果不写缓存：可能是 LLM 响应错位/漂移导致，重跑应再给机会
-                if task_store and (result.entities or result.relations):
-                    await task_store.put_extract_cache(key, result.model_dump())
+                result, error = await _extract_one(llm, chunk, ontology, ontology_json, config, task_store)
+                if result is None:
+                    warnings.append(f"块 {i} 抽取失败已跳过: {error}")
+                    logger.warning("块 %s 抽取失败已跳过: %s", i, error)
+                    emit_task_log(f"块 {i} 抽取失败已跳过: {error}")
+                    results[i] = ExtractionResult()
+                else:
+                    results[i] = result
+                    # 空结果不写缓存：可能是 LLM 响应错位/漂移导致，重跑应再给机会
+                    if task_store and (result.entities or result.relations):
+                        await task_store.put_extract_cache(key, result.model_dump())
+        done += 1
         if progress_cb:
-            await progress_cb(i + 1, len(chunks))
+            await progress_cb(done, len(chunks))
 
     async def _noop(i: int, n: int) -> None:
         return None
