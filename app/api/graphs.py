@@ -83,6 +83,9 @@ async def delete_graph(graph_id: str):
         raise HTTPException(status_code=404, detail="graph not found")
     await svc.neo4j.delete_graph(graph_id)
     await svc.qdrant.delete_collection(graph_id)
+    from app.main import clear_uploaded_files
+
+    clear_uploaded_files(graph_id)  # 磁盘暂存文件一并清理，防泄漏
     return _ok({"deleted": graph_id})
 
 
@@ -101,6 +104,11 @@ async def build_graph(graph_id: str, req: BuildRequest):
             status_code=400,
             detail="未上传文档：请先调用 /api/graphs/{graph_id}/documents 上传",
         )
+    if svc.registry.has_running_for(graph_id):
+        raise HTTPException(
+            status_code=409,
+            detail="该图谱已有构建任务运行中，请等待其完成或失败后再试",
+        )
 
     task_id = new_task_id()
     params = BuildParams(
@@ -115,13 +123,23 @@ async def build_graph(graph_id: str, req: BuildRequest):
 
     task = Task(task_id=task_id, graph_id=graph_id, status=TaskStatus.pending)
     await svc.tasks.create_task(task)
-    svc.registry.register(task_id, run_build(task_id, params, svc))
+    svc.registry.register(task_id, run_build(task_id, params, svc), graph_id)
     return _ok({"task_id": task_id})
 
 
 from fastapi import APIRouter as _AR  # noqa: E402
 
 tasks_router = _AR(prefix="/api/tasks", tags=["tasks"])
+
+
+@tasks_router.get("/by-graph/{graph_id}/latest")
+async def latest_graph_task(graph_id: str):
+    """该图谱最近一次构建任务（前端刷新页面后恢复进度面板）。"""
+    svc = _services()
+    tasks = await svc.tasks.get_tasks_for_graph(graph_id)
+    if not tasks:
+        return _ok(None)
+    return _ok(tasks[0].model_dump())
 
 
 @tasks_router.get("/{task_id}")

@@ -7,7 +7,7 @@ import json
 import logging
 
 from app.config import Config
-from app.llm.client import LLMClient, LLMError, LLMJsonError, parse_json_loose
+from app.llm.client import LLMClient, LLMError, LLMJsonError, emit_task_log, parse_json_loose
 from app.models.graph import ExtractionResult, ExtractEntity, ExtractRelation
 from app.models.ontology import Ontology
 from app.storage.tasks import TaskStore
@@ -210,6 +210,7 @@ async def extract_chunks(
             if result is None:
                 warnings.append(f"块 {i} 抽取失败已跳过: {error}")
                 logger.warning("块 %s 抽取失败已跳过: %s", i, error)
+                emit_task_log(f"块 {i} 抽取失败已跳过: {error}")
                 results[i] = ExtractionResult()
             else:
                 results[i] = result

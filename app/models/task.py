@@ -41,5 +41,6 @@ class Task(BaseModel):
     progress: float = 0.0
     message: str = ""
     error: str = ""
+    logs: list[str] = Field(default_factory=list)  # 运行期事件日志（LLM 重试/阶段切换等）
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)

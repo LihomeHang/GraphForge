@@ -79,6 +79,23 @@ tr:hover td { background: #f8f9ff; }
 .badge.ok { background: #e6f6ef; color: var(--ok); }
 .badge.err { background: #feecec; color: var(--danger); }
 
+/* 弹窗与设置表单 */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(15, 20, 34, .45);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.modal {
+  background: var(--panel); border-radius: 12px; padding: 20px;
+  width: 540px; max-width: calc(100vw - 32px); max-height: 85vh; overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .18);
+}
+.icon-btn { border: none; background: none; font-size: 15px; color: var(--text-dim); padding: 4px 8px; }
+.icon-btn:hover { color: var(--text); }
+.field { margin-bottom: 10px; }
+.field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.msg-ok { color: var(--ok); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+.msg-err { color: var(--danger); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+
 .progress { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; }
 .progress > div { height: 100%; background: var(--primary); transition: width .3s; }
 

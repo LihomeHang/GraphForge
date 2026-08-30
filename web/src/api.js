@@ -39,6 +39,7 @@ export const api = {
   // 构建
   build: (id, payload) => request('POST', `/graphs/${id}/build`, payload),
   getTask: (taskId) => request('GET', `/tasks/${taskId}`),
+  latestTask: (id) => request('GET', `/tasks/by-graph/${id}/latest`),
   // 读取
   nodes: (id) => request('GET', `/graphs/${id}/nodes?limit=500`),
   edges: (id) => request('GET', `/graphs/${id}/edges?limit=500`),
@@ -47,4 +48,8 @@ export const api = {
     request('POST', `/graphs/${id}/search`, { query, top_k: topK }),
   // 导出
   exportUrl: (id) => `${BASE}/graphs/${id}/export/mirofish`,
+  // 系统设置
+  getSettings: () => request('GET', '/settings'),
+  updateSettings: (payload) => request('PUT', '/settings', payload),
+  testSettings: (payload) => request('POST', '/settings/test', payload),
 }

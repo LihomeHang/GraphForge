@@ -25,6 +25,20 @@ class SearchRequest(BaseModel):
     types: list[str] = Field(default_factory=lambda: ["node", "edge"])
 
 
+class SettingsUpdateRequest(BaseModel):
+    """Web 端设置更新：字段缺省（None）表示不修改；API Key 空串也视为不修改。"""
+
+    llm_provider: str | None = Field(default=None, description='"openai" | "mock"')
+    llm_base_url: str | None = None
+    llm_api_key: str | None = Field(default=None, description="缺省/空串 = 保持现有 key")
+    llm_model: str | None = None
+    llm_temperature: float | None = Field(default=None, ge=0, le=2)
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = Field(default=None, description="缺省/空串 = 保持现有 key")
+    embedding_model: str | None = None
+    embedding_dim: int | None = Field(default=None, ge=1)
+
+
 class SearchHit(BaseModel):
     type: str  # "node" | "edge"
     uuid: str

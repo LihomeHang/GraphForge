@@ -140,7 +140,7 @@ function render() {
     d3
       .drag()
       .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y })
-      .drag((ev, d) => { d.fx = ev.x; d.fy = ev.y })
+      .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y })
       .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null })
   )
 

@@ -5,12 +5,31 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
+from typing import Callable
 
 import httpx
 
 from app.config import Config
 
 logger = logging.getLogger("graphforge.llm")
+
+# 任务日志汇：构建任务运行期注册（contextvars 按 asyncio task 隔离，并行构建互不串扰），
+# LLM 重试等事件透传到任务日志，前端可直接查看
+_task_log_sink: ContextVar[Callable[[str], None] | None] = ContextVar("task_log_sink", default=None)
+
+
+def set_task_log_sink(fn: Callable[[str], None]) -> object:
+    return _task_log_sink.set(fn)
+
+
+def emit_task_log(message: str) -> None:
+    sink = _task_log_sink.get()
+    if sink is not None:
+        try:
+            sink(message)
+        except Exception:  # noqa: BLE001  日志汇异常不影响主流程
+            pass
 
 
 class LLMError(RuntimeError):
@@ -75,7 +94,9 @@ class OpenAILLMClient(LLMClient):
         self._client = httpx.AsyncClient(
             base_url=config.llm_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {config.llm_api_key}"},
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            # 300s：深度思考模型（如 glm-5.3-flash）本体/抽取大输出 + 长 reasoning，
+            # 120s 会反复 ReadTimeout 表现为任务卡死
+            timeout=httpx.Timeout(300.0, connect=10.0),
         )
 
     async def complete(self, messages: list[dict[str, str]]) -> str:
@@ -97,9 +118,14 @@ class OpenAILLMClient(LLMClient):
             except (httpx.HTTPError, LLMError, KeyError, IndexError, json.JSONDecodeError) as e:
                 last_exc = e
                 delay = 2.0 ** attempt
-                logger.warning("LLM 调用失败(第 %s 次): %s，%.1fs 后重试", attempt + 1, e, delay)
+                # 超时类异常 str() 可能为空（如 httpx.ReadTimeout），补充类型名便于诊断
+                detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.warning("LLM 调用失败(第 %s 次): %s，%.1fs 后重试", attempt + 1, detail, delay)
+                emit_task_log(f"LLM 第{attempt + 1}次调用失败: {detail}，{delay:.0f}s 后重试")
                 await asyncio.sleep(delay)
-        raise LLMError(f"LLM 调用重试耗尽: {last_exc}") from last_exc
+        exhaust = f"LLM 调用重试耗尽: {type(last_exc).__name__}: {last_exc}"
+        emit_task_log(exhaust)
+        raise LLMError(exhaust) from last_exc
 
     async def close(self) -> None:
         await self._client.aclose()

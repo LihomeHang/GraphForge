@@ -106,6 +106,7 @@ async def resolve(
     # ---- 阶段二：同类型嵌入相似候选 + LLM 判定 ----
     keys = [k for k in order]
     rep_key: dict[str, str] = {k: k for k in keys}  # key -> 代表 key
+    merged_summaries: dict[str, str] = {}  # 保留 key -> LLM 融合 summary（keys<=1 时也可安全访问）
 
     if len(keys) > 1:
         texts = [
@@ -125,7 +126,6 @@ async def resolve(
         # 并发 LLM 判定（限流）
         semaphore = asyncio.Semaphore(config.llm_concurrency)
         merge_map: dict[str, str] = {}  # 被合并 key -> 保留 key
-        merged_summaries: dict[str, str] = {}  # 保留 key -> LLM 融合 summary
 
         async def _judge(i: int, j: int) -> None:
             async with semaphore:
@@ -154,6 +154,27 @@ async def resolve(
     for k in keys:
         cluster_members.setdefault(rep_key[k], []).append(k)
 
+    # summary 聚合：多成员簇并发调 LLM 融合（原先逐簇串行，簇多时明显拖慢构建）
+    merge_sem = asyncio.Semaphore(config.llm_concurrency)
+    pending_merges: dict[str, list[str]] = {}
+    for rep, members in cluster_members.items():
+        if len(members) > 1 and not merged_summaries.get(rep):
+            texts = [s for m in members for s in summaries[m] if s]
+            if texts:
+                pending_merges[rep] = texts
+
+    async def _merge_cluster(rep: str) -> None:
+        try:
+            async with merge_sem:
+                merged_summaries[rep] = await _merge_summaries_llm(
+                    llm, occurrences[rep].name, pending_merges[rep]
+                )
+        except Exception as e:  # noqa: BLE001  聚合失败退化为拼接，不中断构建
+            logger.warning("实体 %s summary 聚合失败: %s", occurrences[rep].name, e)
+
+    if pending_merges:
+        await asyncio.gather(*(_merge_cluster(rep) for rep in pending_merges))
+
     final_entities: list[Entity] = []
     final_name: dict[str, Entity] = {}  # casefold(name) -> 最终实体
     for rep, members in cluster_members.items():
@@ -161,13 +182,11 @@ async def resolve(
         all_summaries: list[str] = []
         for m in members:
             all_summaries.extend(summaries[m])
-        # summary 聚合：LLM 优先（阶段二融合结果），否则多段拼接
+        # summary：阶段二 LLM 融合结果优先，否则聚合阶段的融合结果，再退化为多段拼接
         if len(members) == 1:
             summary = " ".join(s for s in all_summaries if s)
         else:
-            summary = merged_summaries.get(rep) or await _merge_summaries_llm(
-                llm, rep_occ.name, [s for s in all_summaries if s]
-            )
+            summary = merged_summaries.get(rep) or " ".join(s for s in all_summaries if s)
         attrs: dict = {}
         for m in members:
             attrs.update(occurrences[m].attributes)

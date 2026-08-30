@@ -111,7 +111,14 @@
       <div class="progress">
         <div :style="{ width: Math.round(task.progress * 100) + '%' }"></div>
       </div>
+      <div v-if="task.logs && task.logs.length" class="task-logs">
+        <div v-for="(l, i) in task.logs.slice(-12)" :key="i" class="log-line">{{ l }}</div>
+      </div>
       <p v-if="task.status === 'failed'" class="task-error">{{ task.error }}</p>
+      <div v-if="task.status === 'failed'" class="retry-row">
+        <button class="primary" :disabled="busy" @click="retryBuild">↻ 重试构建</button>
+        <span class="muted">文件仍在暂存区；重试会复用已抽取的缓存块，不重复消耗 LLM 额度</span>
+      </div>
       <a v-if="graph.status === 'ready'" class="export-btn" :href="api.exportUrl(graph.graph_id)">
         ⬇ 导出 MiroFish 兼容包 (zip)
       </a>
@@ -223,6 +230,21 @@ async function buildWithOntology() {
   await startBuild({ ontology: ontology.value, purpose: purpose.value })
 }
 
+async function retryBuild() {
+  error.value = ''
+  // 优先复用本次会话生成的本体；否则从图谱元数据取回上次本体，避免重试时重新生成本体。
+  // 若连本体都没有（失败在生成阶段），则带 purpose 让管道重新生成。
+  let onto = ontology.value
+  if (!onto) {
+    try {
+      onto = (await api.getGraph(props.graph.graph_id)).ontology || null
+    } catch {
+      onto = null
+    }
+  }
+  await startBuild(onto ? { ontology: onto, purpose: purpose.value } : { purpose: purpose.value })
+}
+
 async function startBuild(payload) {
   busy.value = true
   error.value = ''
@@ -245,13 +267,27 @@ async function poll() {
       pollTimer = setTimeout(poll, 1000)
     } else {
       emit('refresh')
+      // 构建成功后服务端会清空暂存区，同步前端列表
+      if (task.value.status === 'completed') await refreshStaged()
     }
   } catch (e) {
     error.value = e.message
   }
 }
 
-onMounted(refreshStaged)
+onMounted(async () => {
+  await refreshStaged()
+  // 恢复最近一次构建任务：刷新页面/切换图谱后进度与日志不丢
+  try {
+    const t = await api.latestTask(props.graph.graph_id)
+    if (t) {
+      task.value = t
+      if (!['completed', 'failed'].includes(t.status)) poll()
+    }
+  } catch {
+    /* 无任务或查询失败时静默，不影响工作台使用 */
+  }
+})
 onUnmounted(() => clearTimeout(pollTimer))
 </script>
 
@@ -465,6 +501,30 @@ onUnmounted(() => clearTimeout(pollTimer))
   font-size: 12px;
   margin-top: 4px;
 }
+.task-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+  background: #f7f8fc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.log-line {
+  font-family: ui-monospace, 'Cascadia Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+.retry-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.retry-row .muted { font-size: 12px; }
 .export-btn {
   font-size: 13px;
   color: var(--primary);

@@ -13,7 +13,7 @@
 - **存储**：Neo4j 5.x（属性存 `attributes_json`）+ Qdrant（每图一个 collection，节点/边混合向量）
 - **语义搜索**：查询向量化 → 节点/事实混合检索，边命中自动补端点实体名
 - **MiroFish 导出**：`nodes.json`（uuid/name/labels/summary/attributes）+ `edges.json`（uuid/name/fact/source_node_uuid/target_node_uuid/attributes）+ `ontology.json` + `manifest.json`，字段由合约测试固化
-- **Web UI**：图列表 / 构建工作台（进度轮询）/ d3 力导向图可视化 / 语义搜索四区块
+- **Web UI**：图列表 / 构建工作台（进度轮询）/ d3 力导向图可视化 / 语义搜索四区块 / **系统设置（Web 端配置 LLM，热生效）**
 
 ## 快速开始（docker-compose，一键全栈）
 
@@ -32,6 +32,17 @@ docker compose up -d --build
 | Qdrant | http://localhost:6333 |
 
 试一下真实 LLM 模式（`.env` 里配置 OpenAI 兼容端点与 key）后，在界面：创建图谱 → 上传文档 → 生成本体（或直接构建）→ 等进度完成 → 搜索 / 可视化 / 导出 zip。
+
+## Web 端 LLM 设置（热生效）
+
+界面右上角 ⚙ 设置可直接配置 LLM / Embedding（Provider / Base URL / API Key / 模型 / Temperature / Embedding 高级项），**保存后立即生效，无需重启容器**：
+
+- 配置持久化在 `data/settings.db`，优先级高于环境变量 / `.env`；重启服务仍生效
+- API Key 只回显掩码（`sk-***abcd`），留空表示保持现有值
+- 支持「测试连接」（LLM ping + Embedding 维度探测，20s 超时）
+- 有构建任务运行中时拒绝修改（409），避免运行中任务拿到已关闭的客户端
+
+对应 API：`GET /api/settings`（掩码查看）/ `PUT /api/settings`（更新）/ `POST /api/settings/test`（连通性测试，不保存）
 
 ## 本地开发
 

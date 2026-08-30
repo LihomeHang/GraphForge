@@ -54,7 +54,16 @@ class TaskStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._ensure_logs_column()
         self._conn.commit()
+
+    def _ensure_logs_column(self) -> None:
+        """轻量迁移：老库无 logs 列时补齐。"""
+        cur = self._conn.execute("PRAGMA table_info(tasks)")
+        cols = {r[1] for r in cur.fetchall()}
+        if "logs" not in cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN logs TEXT NOT NULL DEFAULT '[]'")
+            self._conn.commit()
 
     async def close(self) -> None:
         async with self._lock:
@@ -65,8 +74,8 @@ class TaskStore:
     async def create_task(self, task: Task) -> None:
         async with self._lock:
             self._conn.execute(
-                "INSERT INTO tasks (task_id, graph_id, status, stage, progress, message, error, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (task_id, graph_id, status, stage, progress, message, error, logs, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task.task_id,
                     task.graph_id,
@@ -75,6 +84,7 @@ class TaskStore:
                     task.progress,
                     task.message,
                     task.error,
+                    json.dumps(task.logs, ensure_ascii=False),
                     task.created_at,
                     task.updated_at,
                 ),
@@ -82,6 +92,10 @@ class TaskStore:
             self._conn.commit()
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
+        try:
+            logs = json.loads(row["logs"] or "[]")
+        except (KeyError, TypeError, json.JSONDecodeError):
+            logs = []
         return Task(
             task_id=row["task_id"],
             graph_id=row["graph_id"],
@@ -90,6 +104,7 @@ class TaskStore:
             progress=row["progress"],
             message=row["message"],
             error=row["error"],
+            logs=logs,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -114,7 +129,7 @@ class TaskStore:
         task.updated_at = _now()
         async with self._lock:
             self._conn.execute(
-                "UPDATE tasks SET status = ?, stage = ?, progress = ?, message = ?, error = ?, updated_at = ? "
+                "UPDATE tasks SET status = ?, stage = ?, progress = ?, message = ?, error = ?, logs = ?, updated_at = ? "
                 "WHERE task_id = ?",
                 (
                     task.status.value,
@@ -122,6 +137,7 @@ class TaskStore:
                     task.progress,
                     task.message,
                     task.error,
+                    json.dumps(task.logs, ensure_ascii=False),
                     task.updated_at,
                     task.task_id,
                 ),

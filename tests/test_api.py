@@ -339,3 +339,96 @@ def test_ontology_from_staged_files(client):
     assert r.status_code == 200
     ontology = r.json()["data"]
     assert any(et["name"] == "Person" for et in ontology["entity_types"])
+
+
+def test_settings_get_and_update(client):
+    """Web 端设置：查看 / 校验失败拒绝 / 更新热生效 / key 掩码不回显。"""
+    # 初始：mock 模式（fixture config 无 api_key）
+    r = client.get("/api/settings")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["llm_provider"] == "mock"
+    assert data["llm_api_key_set"] is False
+
+    # 切 openai 但缺 api_key（env 也没有）→ 400，配置不变
+    r = client.put(
+        "/api/settings",
+        json={"llm_provider": "openai", "llm_base_url": "http://x/v1", "llm_model": "m"},
+    )
+    assert r.status_code == 400
+    assert client.get("/api/settings").json()["data"]["llm_provider"] == "mock"
+
+    # 带 api_key 更新成功，客户端热重建为 openai
+    r = client.put(
+        "/api/settings",
+        json={
+            "llm_provider": "openai",
+            "llm_base_url": "http://x/v1",
+            "llm_api_key": "sk-secret-1234567890",
+            "llm_model": "test-model",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["llm_provider"] == "openai"
+    assert data["llm_api_key_set"] is True
+    assert data["llm_api_key_masked"].endswith("7890")
+    assert "sk-secret-1234567890" not in r.text  # 掩码，不回显完整 key
+    from app.api.graphs import _services
+
+    svc = _services()
+    assert svc.config.llm_provider == "openai" and svc.config.llm_model == "test-model"
+
+    # GET 反映热更新后的配置；web_overrides 记录覆盖项
+    data = client.get("/api/settings").json()["data"]
+    assert data["llm_provider"] == "openai"
+    assert "LLM_API_KEY" in data["web_overrides"]
+
+    # 切回 mock（api_key 缺省 = 保持不变）
+    r = client.put("/api/settings", json={"llm_provider": "mock"})
+    assert r.status_code == 200
+    assert client.get("/api/settings").json()["data"]["llm_provider"] == "mock"
+
+
+def test_settings_no_op_and_test_endpoint(client):
+    """空更新是 no-op；/test 在 mock 下直接成功。"""
+    r = client.put("/api/settings", json={})
+    assert r.status_code == 200
+
+    r = client.post("/api/settings/test", json={"llm_provider": "mock"})
+    assert r.status_code == 200
+    assert r.json()["data"]["llm"]["ok"] is True
+
+
+def test_settings_persist_and_overrides(tmp_path):
+    """设置持久化到 SQLite；重启路径（load_all → with_overrides）能正确应用覆盖项。"""
+    import asyncio
+
+    from app.config import Config
+    from app.storage.settings import SettingsStore
+
+    async def write_and_read():
+        store = SettingsStore(tmp_path / "settings.db")
+        await store.update(
+            {
+                "LLM_PROVIDER": "openai",
+                "LLM_BASE_URL": "http://x/v1",
+                "LLM_API_KEY": "sk-persist-98765432",
+                "LLM_MODEL": "m1",
+            }
+        )
+        # 模拟重启：新连接重新读回
+        overrides = await store.load_all()
+        await store.close()
+        return overrides
+
+    overrides = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(write_and_read())
+
+    base = Config(llm_provider="mock", neo4j_password="t", llm_model="gpt-4o-mini")
+    cfg = base.with_overrides(overrides)
+    assert cfg.llm_provider == "openai"
+    assert cfg.llm_model == "m1"
+    assert cfg.llm_api_key == "sk-persist-98765432"
+    # 未覆盖项保持 env 缺省；frozen dataclass 不被原地修改
+    assert cfg.neo4j_password == "t"
+    assert base.llm_provider == "mock"

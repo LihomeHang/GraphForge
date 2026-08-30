@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -75,6 +75,34 @@ class Config:
             raise ConfigError(
                 f"缺少必需配置: {', '.join(missing)}。请设置对应环境变量后再启动。"
             )
+
+    def with_overrides(self, raw: dict[str, str]) -> "Config":
+        """应用环境变量名风格的覆盖项（Web 端设置，值来自 SQLite）。空值跳过。"""
+        data: dict = {}
+        for key, value in raw.items():
+            if value is None or str(value).strip() == "":
+                continue
+            k, v = key.upper(), str(value).strip()
+            if k == "LLM_PROVIDER":
+                data["llm_provider"] = v.lower()
+            elif k == "LLM_BASE_URL":
+                data["llm_base_url"] = v
+            elif k == "LLM_API_KEY":
+                data["llm_api_key"] = v
+            elif k == "LLM_MODEL":
+                data["llm_model"] = v
+            elif k == "LLM_TEMPERATURE":
+                data["llm_temperature"] = float(v)
+            elif k == "EMBEDDING_BASE_URL":
+                data["embedding_base_url"] = v
+            elif k == "EMBEDDING_API_KEY":
+                data["embedding_api_key"] = v
+            elif k == "EMBEDDING_MODEL":
+                data["embedding_model"] = v
+            elif k == "EMBEDDING_DIM":
+                data["embedding_dim"] = int(v)
+            # 未知 key 忽略（向前兼容）
+        return replace(self, **data) if data else self
 
     @classmethod
     def from_env(cls) -> "Config":
