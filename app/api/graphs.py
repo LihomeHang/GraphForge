@@ -84,9 +84,62 @@ async def delete_graph(graph_id: str):
     await svc.neo4j.delete_graph(graph_id)
     await svc.qdrant.delete_collection(graph_id)
     from app.main import clear_uploaded_files
+    from app.pipeline.runner import PREVIEW_RESULTS
 
     clear_uploaded_files(graph_id)  # 磁盘暂存文件一并清理，防泄漏
+    PREVIEW_RESULTS.pop(graph_id, None)  # 实时预览缓冲同步清理
     return _ok({"deleted": graph_id})
+
+
+@router.get("/{graph_id}/preview")
+async def preview_graph(graph_id: str):
+    """构建过程实时预览：已完成块的原始抽取结果做轻量合并（同名实体 casefold 合并，
+    关系去重，无 LLM/嵌入消歧）。无缓冲（未在构建/服务重启）时返回空，前端回退正式数据。"""
+    from app.pipeline.runner import PREVIEW_RESULTS
+
+    results = PREVIEW_RESULTS.get(graph_id) or []
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for res in results:
+        for e in res.entities:
+            key = e.name.strip().casefold()
+            if key not in nodes:
+                nodes[key] = {
+                    "uuid": key,
+                    "name": e.name,
+                    "type": e.type,
+                    "summary": e.summary or "",
+                    "labels": [e.type, "Entity"],
+                }
+            elif not nodes[key]["summary"] and e.summary:
+                nodes[key]["summary"] = e.summary
+        for r in res.relations:
+            src = r.source.strip().casefold()
+            tgt = r.target.strip().casefold()
+            if src not in nodes or tgt not in nodes or src == tgt:
+                continue
+            rk = (src, tgt, r.type.strip().casefold())
+            if rk in seen:
+                continue
+            seen.add(rk)
+            edges.append(
+                {
+                    "name": r.type,
+                    "fact": r.fact,
+                    "source_node_uuid": src,
+                    "target_node_uuid": tgt,
+                }
+            )
+    return _ok(
+        {
+            "source": "preview",
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "nodes": list(nodes.values()),
+            "edges": edges,
+        }
+    )
 
 
 @router.post("/{graph_id}/build")

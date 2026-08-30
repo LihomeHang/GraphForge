@@ -188,12 +188,14 @@ async def extract_chunks(
     config: Config,
     task_store: TaskStore | None = None,
     progress_cb=None,
+    chunk_result_cb=None,
 ) -> tuple[list[ExtractionResult], list[str]]:
     """并发抽取所有块（Semaphore 限流）。
 
     返回 (结果列表（与 chunks 对齐，失败块为空结果）, 警告列表)。
     块级失败隔离：跳过失败块并记录警告，不中断整个任务。
     带块级缓存（extract_cache），幂等重跑不重复计费。
+    chunk_result_cb(i, result)：每块出结果（含缓存命中）时回调，供实时预览。
     """
     semaphore = asyncio.Semaphore(config.llm_concurrency)
     warnings: list[str] = []
@@ -220,6 +222,8 @@ async def extract_chunks(
                     if task_store and (result.entities or result.relations):
                         await task_store.put_extract_cache(key, result.model_dump())
         done += 1
+        if chunk_result_cb and results[i] is not None:
+            chunk_result_cb(i, results[i])
         if progress_cb:
             await progress_cb(done, len(chunks))
 

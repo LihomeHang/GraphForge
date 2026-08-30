@@ -20,7 +20,7 @@
       <Workbench :graph="currentGraph" @refresh="refreshGraph" />
       <div class="row" style="align-items: flex-start; gap: 16px">
         <div style="flex: 1.6; min-width: 0">
-          <GraphView :graph-id="currentGraph.graph_id" :reload-key="reloadKey" />
+          <GraphView :graph-id="currentGraph.graph_id" :graph-status="currentGraph.status" :reload-key="reloadKey" />
         </div>
         <div style="flex: 1; min-width: 0">
           <SearchPanel :graph-id="currentGraph.graph_id" />

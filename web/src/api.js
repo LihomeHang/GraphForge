@@ -43,6 +43,7 @@ export const api = {
   // 读取
   nodes: (id) => request('GET', `/graphs/${id}/nodes?limit=500`),
   edges: (id) => request('GET', `/graphs/${id}/edges?limit=500`),
+  preview: (id) => request('GET', `/graphs/${id}/preview`),
   // 搜索
   search: (id, query, topK = 10) =>
     request('POST', `/graphs/${id}/search`, { query, top_k: topK }),

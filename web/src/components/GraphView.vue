@@ -23,7 +23,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import * as d3 from 'd3'
 import { api } from '../api'
 
@@ -155,8 +155,27 @@ function render() {
   })
 }
 
-onMounted(load)
+let previewTimer = null
+// 构建期间每 5s 刷新一次预览（每块完成即可见），结束后拉取正式数据并停止轮询
+function syncPreviewPolling() {
+  clearInterval(previewTimer)
+  previewTimer = null
+  if (props.graphStatus === 'building') previewTimer = setInterval(load, 5000)
+}
+
+onMounted(() => {
+  load()
+  syncPreviewPolling()
+})
+watch(
+  () => props.graphStatus,
+  () => {
+    load()
+    syncPreviewPolling()
+  }
+)
 watch(() => props.reloadKey, load)
+onUnmounted(() => clearInterval(previewTimer))
 </script>
 
 <style scoped>

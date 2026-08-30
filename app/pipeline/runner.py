@@ -22,6 +22,10 @@ from app.storage.tasks import TaskStore
 
 logger = logging.getLogger("graphforge.pipeline")
 
+# 构建预览缓冲：graph_id -> 按完成顺序的块抽取结果（未消歧）。
+# 用于构建过程中实时可视化（/graphs/{id}/preview），新构建开始时重置，删除图谱时清理。
+PREVIEW_RESULTS: dict[str, list] = {}
+
 
 class TaskRegistry:
     """内存任务注册表：task_id -> asyncio.Task。"""
@@ -167,6 +171,10 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     task.stage = "extracting"
     task.progress = 0.20
     task.message = f"抽取 {len(chunks)} 块"
+    PREVIEW_RESULTS[params.graph_id] = []  # 重置实时预览缓冲
+
+    def _on_chunk_result(_i: int, result) -> None:
+        PREVIEW_RESULTS.setdefault(params.graph_id, []).append(result)
 
     async def _extract_progress(done: int, total: int) -> None:
         task.progress = 0.20 + 0.55 * (done / total)
@@ -174,7 +182,8 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
         await svc.tasks.update_task(task)
 
     results, warnings = await extractor.extract_chunks(
-        svc.llm, chunks, onto, onto_json, params.graph_id, cfg, svc.tasks, _extract_progress
+        svc.llm, chunks, onto, onto_json, params.graph_id, cfg, svc.tasks, _extract_progress,
+        chunk_result_cb=_on_chunk_result,
     )
     task.message = f"抽取完成{'（' + str(len(warnings)) + ' 块失败跳过）' if warnings else ''}"
     emit_task_log(task.message)
