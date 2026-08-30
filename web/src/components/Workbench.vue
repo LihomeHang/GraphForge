@@ -68,10 +68,12 @@
         <input v-model="purpose" class="purpose" placeholder="分析目的（可选，帮助生成更贴合的本体）" />
 
         <div class="actions">
-          <button :disabled="!hasDocs || busy" @click="genOntology">生成预览本体</button>
-          <button class="primary" :disabled="!hasDocs || busy" @click="buildDirect">直接构建图谱</button>
+          <button :disabled="!hasDocs || busy || taskRunning" @click="genOntology">生成预览本体</button>
+          <button class="primary" :disabled="!hasDocs || busy || taskRunning" @click="buildDirect">直接构建图谱</button>
         </div>
-        <p class="muted hint">「直接构建」自动生成本体并开始抽取；多个文件将合并为一个语料参与构建。</p>
+        <p class="muted hint">
+          {{ taskRunning ? '构建任务进行中，构建操作已锁定；可继续上传/移除文档，供下次构建使用。' : '「直接构建」自动生成本体并开始抽取；多个文件将合并为一个语料参与构建。' }}
+        </p>
       </div>
 
       <!-- 右：本体预览 -->
@@ -90,7 +92,7 @@
               <span v-for="et in ontology.edge_types" :key="et.name" class="badge green">{{ et.name }}</span>
             </div>
           </div>
-          <button class="primary build-btn" :disabled="busy" @click="buildWithOntology">用此本体构建</button>
+          <button class="primary build-btn" :disabled="busy || taskRunning" @click="buildWithOntology">用此本体构建</button>
         </div>
         <div v-else class="ontology-empty">
           <p class="muted">尚未生成本体</p>
@@ -145,6 +147,7 @@ const error = ref('')
 const dragover = ref(false)
 const fileInput = ref(null)
 const hasDocs = computed(() => staged.value.length > 0)
+const taskRunning = computed(() => !!task.value && !['completed', 'failed'].includes(task.value.status))
 let pollTimer = null
 
 function addFiles(fileList) {
