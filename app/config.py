@@ -26,10 +26,15 @@ class Config:
     llm_temperature: float = 0.0
 
     # Embedding (OpenAI 兼容)
+    embedding_provider: str = "auto"  # "auto" | "remote" | "local"
     embedding_base_url: str = ""
     embedding_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int | None = None  # None = 自动探测
+    embedding_batch_size: int = 128
+    embedding_concurrency: int = 4
+    embedding_max_retries: int = 2
+    local_embedding_dim: int = 1024
 
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
@@ -41,10 +46,12 @@ class Config:
     qdrant_api_key: str = ""
 
     # 管道参数
-    chunk_size: int = 500
-    chunk_overlap: int = 50
-    llm_concurrency: int = 4
+    chunk_size: int = 1200
+    chunk_overlap: int = 100
+    llm_concurrency: int = 8
+    extract_batch_size: int = 4
     resolve_sim_threshold: float = 0.85
+    resolve_candidate_k: int = 8
     extract_max_retry: int = 2
     entity_type_limit: int = 16
     edge_type_limit: int = 24
@@ -71,6 +78,22 @@ class Config:
             missing.append("QDRANT_URL")
         if self.chunk_size <= 0 or self.chunk_overlap < 0 or self.chunk_overlap >= self.chunk_size:
             raise ConfigError("CHUNK_SIZE 必须 > 0 且 CHUNK_OVERLAP < CHUNK_SIZE")
+        if self.llm_concurrency <= 0:
+            raise ConfigError("LLM_CONCURRENCY 必须 > 0")
+        if self.extract_batch_size <= 0:
+            raise ConfigError("EXTRACT_BATCH_SIZE 必须 > 0")
+        if self.embedding_batch_size <= 0:
+            raise ConfigError("EMBEDDING_BATCH_SIZE 必须 > 0")
+        if self.embedding_provider not in {"auto", "remote", "local"}:
+            raise ConfigError("EMBEDDING_PROVIDER 必须是 auto、remote 或 local")
+        if self.embedding_concurrency <= 0:
+            raise ConfigError("EMBEDDING_CONCURRENCY 必须 > 0")
+        if self.embedding_max_retries < 0:
+            raise ConfigError("EMBEDDING_MAX_RETRIES 必须 >= 0")
+        if self.local_embedding_dim <= 0:
+            raise ConfigError("LOCAL_EMBEDDING_DIM 必须 > 0")
+        if self.resolve_candidate_k <= 0:
+            raise ConfigError("RESOLVE_CANDIDATE_K 必须 > 0")
         if missing:
             raise ConfigError(
                 f"缺少必需配置: {', '.join(missing)}。请设置对应环境变量后再启动。"
@@ -95,12 +118,32 @@ class Config:
                 data["llm_temperature"] = float(v)
             elif k == "EMBEDDING_BASE_URL":
                 data["embedding_base_url"] = v
+            elif k == "EMBEDDING_PROVIDER":
+                data["embedding_provider"] = v.lower()
             elif k == "EMBEDDING_API_KEY":
                 data["embedding_api_key"] = v
             elif k == "EMBEDDING_MODEL":
                 data["embedding_model"] = v
             elif k == "EMBEDDING_DIM":
                 data["embedding_dim"] = int(v)
+            elif k == "EMBEDDING_BATCH_SIZE":
+                data["embedding_batch_size"] = int(v)
+            elif k == "EMBEDDING_CONCURRENCY":
+                data["embedding_concurrency"] = int(v)
+            elif k == "EMBEDDING_MAX_RETRIES":
+                data["embedding_max_retries"] = int(v)
+            elif k == "LOCAL_EMBEDDING_DIM":
+                data["local_embedding_dim"] = int(v)
+            elif k == "CHUNK_SIZE":
+                data["chunk_size"] = int(v)
+            elif k == "CHUNK_OVERLAP":
+                data["chunk_overlap"] = int(v)
+            elif k == "LLM_CONCURRENCY":
+                data["llm_concurrency"] = int(v)
+            elif k == "EXTRACT_BATCH_SIZE":
+                data["extract_batch_size"] = int(v)
+            elif k == "RESOLVE_CANDIDATE_K":
+                data["resolve_candidate_k"] = int(v)
             # 未知 key 忽略（向前兼容）
         return replace(self, **data) if data else self
 
@@ -127,19 +170,26 @@ class Config:
             llm_api_key=_str("LLM_API_KEY"),
             llm_model=_str("LLM_MODEL", "gpt-4o-mini"),
             llm_temperature=_float("LLM_TEMPERATURE", 0.0),
+            embedding_provider=_str("EMBEDDING_PROVIDER", "auto").lower(),
             embedding_base_url=_str("EMBEDDING_BASE_URL"),
             embedding_api_key=_str("EMBEDDING_API_KEY"),
             embedding_model=_str("EMBEDDING_MODEL", "text-embedding-3-small"),
             embedding_dim=embedding_dim,
+            embedding_batch_size=_int("EMBEDDING_BATCH_SIZE", 128),
+            embedding_concurrency=_int("EMBEDDING_CONCURRENCY", 4),
+            embedding_max_retries=_int("EMBEDDING_MAX_RETRIES", 2),
+            local_embedding_dim=_int("LOCAL_EMBEDDING_DIM", 1024),
             neo4j_uri=_str("NEO4J_URI", "bolt://localhost:7687"),
             neo4j_user=_str("NEO4J_USER", "neo4j"),
             neo4j_password=_str("NEO4J_PASSWORD"),
             qdrant_url=_str("QDRANT_URL", "http://localhost:6333"),
             qdrant_api_key=_str("QDRANT_API_KEY"),
-            chunk_size=_int("CHUNK_SIZE", 500),
-            chunk_overlap=_int("CHUNK_OVERLAP", 50),
-            llm_concurrency=_int("LLM_CONCURRENCY", 4),
+            chunk_size=_int("CHUNK_SIZE", 1200),
+            chunk_overlap=_int("CHUNK_OVERLAP", 100),
+            llm_concurrency=_int("LLM_CONCURRENCY", 8),
+            extract_batch_size=_int("EXTRACT_BATCH_SIZE", 4),
             resolve_sim_threshold=_float("RESOLVE_SIM_THRESHOLD", 0.85),
+            resolve_candidate_k=_int("RESOLVE_CANDIDATE_K", 8),
             extract_max_retry=_int("EXTRACT_MAX_RETRY", 2),
             entity_type_limit=_int("ENTITY_TYPE_LIMIT", 16),
             edge_type_limit=_int("EDGE_TYPE_LIMIT", 24),

@@ -140,7 +140,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({ graph: Object })
-const emit = defineEmits(['refresh'])
+const emit = defineEmits(['refresh', 'task-change'])
 
 const pending = ref([]) // 待上传文件（File 对象）
 const staged = ref([]) // 服务端已暂存文件名
@@ -263,6 +263,7 @@ async function startBuild(payload) {
   try {
     const data = await api.build(props.graph.graph_id, payload)
     task.value = { task_id: data.task_id, status: 'pending', progress: 0, message: '' }
+    emit('task-change', task.value)
     poll()
   } catch (e) {
     error.value = e.message
@@ -275,8 +276,9 @@ async function poll() {
   clearTimeout(pollTimer)
   try {
     task.value = await api.getTask(task.value.task_id)
+    emit('task-change', task.value)
     if (!['completed', 'failed'].includes(task.value.status)) {
-      pollTimer = setTimeout(poll, 1000)
+      pollTimer = setTimeout(poll, 3000)
     } else {
       emit('refresh')
       // 构建成功后服务端会清空暂存区，同步前端列表
@@ -294,6 +296,7 @@ onMounted(async () => {
     const t = await api.latestTask(props.graph.graph_id)
     if (t) {
       task.value = t
+      emit('task-change', t)
       if (!['completed', 'failed'].includes(t.status)) poll()
     }
   } catch {

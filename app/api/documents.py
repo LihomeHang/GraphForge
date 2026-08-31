@@ -20,27 +20,33 @@ async def upload_document(
     graph_id: str,
     files: list[UploadFile] = File(...),
     purpose: str = Form(""),
+    replace_existing: bool = Form(False),
 ):
     """上传一个或多个文档（pdf/md/txt），同步解析校验并暂存，等待 build 消费。
 
-    多文件上传属于累加语义：多次调用追加文件，build 时全部参与构建。
+    默认多次调用会追加文件；replace_existing=true 时在全部新文件校验成功后整体替换。
     """
     from app.api.graphs import _services
-    from app.main import store_uploaded_file
+    from app.main import clear_uploaded_files, store_uploaded_file
 
     svc = _services()
     meta = await svc.neo4j.get_graph_meta(graph_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="graph not found")
-    stored = []
+    pending = []
     for file in files:
         content = await file.read()
         try:
             text = parser.parse_bytes(content, file.filename or "")
         except parser.ParseError as e:
             raise HTTPException(status_code=400, detail=f"{file.filename}: {e}")
-        store_uploaded_file(graph_id, content, file.filename or "")
-        stored.append({"filename": file.filename, "chars": len(text)})
+        pending.append((content, file.filename or "", len(text)))
+    if replace_existing:
+        clear_uploaded_files(graph_id)
+    stored = []
+    for content, filename, char_count in pending:
+        store_uploaded_file(graph_id, content, filename)
+        stored.append({"filename": filename, "chars": char_count})
     return {
         "success": True,
         "data": {"files": stored, "count": len(stored), "purpose": purpose},

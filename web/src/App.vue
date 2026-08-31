@@ -17,10 +17,10 @@
 
     <!-- 区块 2/3/4：图工作台 -->
     <template v-else>
-      <Workbench :graph="currentGraph" @refresh="refreshGraph" />
+      <Workbench :graph="currentGraph" @refresh="refreshGraph" @task-change="onTaskChange" />
       <div class="row" style="align-items: flex-start; gap: 16px">
         <div style="flex: 1.6; min-width: 0">
-          <GraphView :graph-id="currentGraph.graph_id" :graph-status="currentGraph.status" :reload-key="reloadKey" />
+          <GraphView :graph-id="currentGraph.graph_id" :building="buildActive" :reload-key="reloadKey" />
         </div>
         <div style="flex: 1; min-width: 0">
           <SearchPanel :graph-id="currentGraph.graph_id" />
@@ -41,6 +41,7 @@ import { api } from './api'
 
 const currentGraph = ref(null)
 const reloadKey = ref(0)
+const buildActive = ref(false)
 const settingsOpen = ref(false)
 const llmBadge = ref('')
 
@@ -57,7 +58,12 @@ onMounted(loadLlmBadge)
 async function enterGraph(id) {
   const g = await api.getGraph(id)
   currentGraph.value = g
+  buildActive.value = g.status === 'building'
   reloadKey.value++
+}
+
+function onTaskChange(task) {
+  buildActive.value = !!task && !['completed', 'failed'].includes(task.status)
 }
 
 async function refreshGraph() {
@@ -68,5 +74,6 @@ async function refreshGraph() {
 
 function backToList() {
   currentGraph.value = null
+  buildActive.value = false
 }
 </script>

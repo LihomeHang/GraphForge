@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS extract_runs (
     state_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS preview_results (
+    graph_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    result_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (graph_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_preview_results_task ON preview_results(task_id);
 """
 
 
@@ -174,6 +184,49 @@ class TaskStore:
                 "INSERT OR REPLACE INTO extract_cache (chunk_hash, result_json, created_at) VALUES (?, ?, ?)",
                 (chunk_hash, json.dumps(result, ensure_ascii=False), _now()),
             )
+            self._conn.commit()
+
+    # ---- 构建预览（跨进程重启持久化）----
+
+    async def reset_preview(self, graph_id: str, _task_id: str) -> None:
+        """新任务开始时清空该图谱的旧预览；task_id 用于明确调用方所属任务。"""
+        async with self._lock:
+            self._conn.execute("DELETE FROM preview_results WHERE graph_id = ?", (graph_id,))
+            self._conn.commit()
+
+    async def put_preview_result(
+        self,
+        graph_id: str,
+        task_id: str,
+        chunk_index: int,
+        result: dict[str, Any],
+    ) -> None:
+        async with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO preview_results "
+                "(graph_id, task_id, chunk_index, result_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    graph_id,
+                    task_id,
+                    chunk_index,
+                    json.dumps(result, ensure_ascii=False),
+                    _now(),
+                ),
+            )
+            self._conn.commit()
+
+    async def get_preview_results(self, graph_id: str) -> list[dict[str, Any]]:
+        async with self._lock:
+            cur = self._conn.execute(
+                "SELECT result_json FROM preview_results "
+                "WHERE graph_id = ? ORDER BY chunk_index",
+                (graph_id,),
+            )
+            return [json.loads(row[0]) for row in cur.fetchall()]
+
+    async def delete_preview(self, graph_id: str) -> None:
+        async with self._lock:
+            self._conn.execute("DELETE FROM preview_results WHERE graph_id = ?", (graph_id,))
             self._conn.commit()
 
     # ---- 管道中间状态（重启后续跑用）----

@@ -12,6 +12,7 @@ dependencies = [
     "charset-normalizer>=3.3",
     "pydantic>=2.8",
     "httpx>=0.27",
+    "numpy>=2.0",
     "structlog>=24.4",
     "python-multipart>=0.0.9",
     "python-dotenv>=1.2.3",

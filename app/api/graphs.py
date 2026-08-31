@@ -27,7 +27,7 @@ def _ok(data=None):
 @router.post("")
 async def create_graph(req: GraphCreateRequest):
     svc = _services()
-    graph_id = str(_uuid.uuid4())
+    graph_id = req.graph_id or str(_uuid.uuid4())
     await svc.neo4j.create_graph(graph_id, req.name)
     return _ok({"graph_id": graph_id, "name": req.name})
 
@@ -88,19 +88,26 @@ async def delete_graph(graph_id: str):
 
     clear_uploaded_files(graph_id)  # 磁盘暂存文件一并清理，防泄漏
     PREVIEW_RESULTS.pop(graph_id, None)  # 实时预览缓冲同步清理
+    await svc.tasks.delete_preview(graph_id)
     return _ok({"deleted": graph_id})
 
 
 @router.get("/{graph_id}/preview")
 async def preview_graph(graph_id: str):
     """构建过程实时预览：已完成块的原始抽取结果做轻量合并（同名实体 casefold 合并，
-    关系去重，无 LLM/嵌入消歧）。无缓冲（未在构建/服务重启）时返回空，前端回退正式数据。"""
+    关系去重，无 LLM/嵌入消歧）。内存缓冲为空时从 SQLite 恢复。"""
+    from app.models.graph import ExtractionResult
     from app.pipeline.runner import PREVIEW_RESULTS
 
     results = PREVIEW_RESULTS.get(graph_id) or []
+    if not results:
+        svc = _services()
+        persisted = await svc.tasks.get_preview_results(graph_id)
+        results = [ExtractionResult.model_validate(item) for item in persisted]
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
+    # 先收齐所有块的实体，再解析关系；关系端点经常在后续块中才首次出现。
     for res in results:
         for e in res.entities:
             key = e.name.strip().casefold()
@@ -114,6 +121,7 @@ async def preview_graph(graph_id: str):
                 }
             elif not nodes[key]["summary"] and e.summary:
                 nodes[key]["summary"] = e.summary
+    for res in results:
         for r in res.relations:
             src = r.source.strip().casefold()
             tgt = r.target.strip().casefold()
@@ -163,12 +171,20 @@ async def build_graph(graph_id: str, req: BuildRequest):
             detail="该图谱已有构建任务运行中，请等待其完成或失败后再试",
         )
 
+    # 接受新任务时立即清空上一次预览，避免本体生成阶段短暂展示旧构建结果。
+    from app.pipeline.runner import PREVIEW_RESULTS
+
     task_id = new_task_id()
+    PREVIEW_RESULTS[graph_id] = []
+    await svc.tasks.reset_preview(graph_id, task_id)
     params = BuildParams(
         graph_id=graph_id,
         files=files,
         purpose=req.purpose,
         ontology=req.ontology,
+        ontology_mode=req.ontology_mode,
+        replace_existing=req.replace_existing,
+        documents_are_chunks=req.documents_are_chunks,
         chunk_size=req.chunk_size,
         chunk_overlap=req.chunk_overlap,
     )

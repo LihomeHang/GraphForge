@@ -73,6 +73,16 @@ class Neo4jStore:
 
     async def verify(self) -> None:
         await self._driver.verify_connectivity()
+        statements = (
+            "CREATE INDEX entity_uuid IF NOT EXISTS FOR (n:Entity) ON (n.uuid)",
+            "CREATE INDEX entity_graph_id IF NOT EXISTS FOR (n:Entity) ON (n.graph_id)",
+            "CREATE INDEX graph_meta_graph_id IF NOT EXISTS FOR (g:GraphMeta) ON (g.graph_id)",
+            "CALL db.awaitIndexes(300)",
+        )
+        async with self._driver.session() as session:
+            for statement in statements:
+                result = await session.run(statement)
+                await result.consume()
 
     async def close(self) -> None:
         await self._driver.close()
@@ -120,11 +130,16 @@ class Neo4jStore:
             return dict(rec["g"])
 
     async def delete_graph(self, graph_id: str) -> None:
+        await self.clear_graph_data(graph_id)
+        async with self._driver.session() as s:
+            await s.run("MATCH (g:GraphMeta {graph_id: $graph_id}) DELETE g", graph_id=graph_id)
+
+    async def clear_graph_data(self, graph_id: str) -> None:
+        """Delete graph entities and their relationships while retaining GraphMeta."""
         async with self._driver.session() as s:
             await s.run(
                 "MATCH (n:Entity {graph_id: $graph_id}) DETACH DELETE n", graph_id=graph_id
             )
-            await s.run("MATCH (g:GraphMeta {graph_id: $graph_id}) DELETE g", graph_id=graph_id)
 
     # ---- 节点/边写入 ----
 
@@ -180,7 +195,7 @@ class Neo4jStore:
             result = await s.run(
                 """
                 MATCH (n:Entity {graph_id: $graph_id})
-                RETURN n ORDER BY n.name SKIP $offset LIMIT $limit
+                RETURN n ORDER BY n.name, n.uuid SKIP $offset LIMIT $limit
                 """,
                 graph_id=graph_id,
                 offset=offset,
@@ -195,7 +210,7 @@ class Neo4jStore:
                 """
                 MATCH (s:Entity {graph_id: $graph_id})-[r]->(t:Entity {graph_id: $graph_id})
                 RETURN r, s.uuid AS source_uuid, t.uuid AS target_uuid
-                ORDER BY r.fact SKIP $offset LIMIT $limit
+                ORDER BY r.fact, r.uuid SKIP $offset LIMIT $limit
                 """,
                 graph_id=graph_id,
                 offset=offset,

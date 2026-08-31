@@ -1,8 +1,15 @@
 <template>
   <div class="card">
-    <h2>图谱可视化</h2>
+    <div class="graph-head">
+      <h2>图谱可视化</h2>
+      <span class="graph-stats" :class="{ live: building }">
+        <span v-if="building" class="live-dot"></span>{{ building ? '实时预览 · ' : '' }}{{ nodes.length }} 节点 / {{ edges.length }} 关系
+      </span>
+    </div>
     <p v-if="error" class="muted" style="color: var(--danger)">{{ error }}</p>
-    <p v-if="!nodes.length" class="muted">暂无节点，先完成一次构建。</p>
+    <p v-if="!nodes.length" class="muted">
+      {{ building ? '正在等待首批抽取结果…' : '暂无节点，先完成一次构建。' }}
+    </p>
     <div ref="svgEl" class="graph-svg"></div>
     <!-- 详情浮层 -->
     <div v-if="detail" class="detail">
@@ -26,13 +33,16 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import * as d3 from 'd3'
 import { api } from '../api'
+import { fitGraphTransform } from '../graphLayout'
 
-const props = defineProps({ graphId: String, reloadKey: Number })
+const props = defineProps({ graphId: String, building: Boolean, reloadKey: Number })
 const nodes = ref([])
 const edges = ref([])
 const detail = ref(null)
 const error = ref('')
 const svgEl = ref(null)
+let simulation = null
+let loadVersion = 0
 
 const PALETTE = ['#4f6ef7', '#30a46c', '#e5484d', '#f7a417', '#9b6ef7', '#0ea5b7', '#e4559f', '#7d8a99']
 
@@ -47,18 +57,34 @@ function colorOf(type) {
 }
 
 async function load() {
+  const version = ++loadVersion
   error.value = ''
   try {
-    const [ns, es] = await Promise.all([api.nodes(props.graphId), api.edges(props.graphId)])
-    nodes.value = ns
-    edges.value = es
+    if (props.building) {
+      const preview = await api.preview(props.graphId)
+      // 页面切换或构建状态变化后，忽略较早发出的响应，避免空的正式数据覆盖预览结果。
+      if (version !== loadVersion) return
+      // 本体生成阶段预览尚为空；保留已有正式图谱，避免重构建时画布闪空。
+      if (preview.nodes.length || !nodes.value.length) {
+        nodes.value = preview.nodes
+        edges.value = preview.edges
+        render()
+      }
+      return
+    }
+    const data = await api.graphData(props.graphId)
+    if (version !== loadVersion) return
+    nodes.value = data.nodes
+    edges.value = data.edges
     render()
   } catch (e) {
-    error.value = e.message
+    if (version === loadVersion) error.value = e.message
   }
 }
 
 function render() {
+  simulation?.stop()
+  simulation = null
   const el = d3.select(svgEl.value)
   el.selectAll('*').remove()
   if (!nodes.value.length) return
@@ -82,24 +108,39 @@ function render() {
 
   const svg = el.append('svg').attr('width', width).attr('height', height)
   const g = svg.append('g')
+  let userMovedViewport = false
 
-  svg.call(
-    d3.zoom().on('zoom', (ev) => g.attr('transform', ev.transform))
-  )
+  const zoom = d3.zoom()
+    .scaleExtent([0.005, 8])
+    .on('zoom', (ev) => g.attr('transform', ev.transform))
+  svg.call(zoom)
+  svg.on('wheel.fit mousedown.fit touchstart.fit', () => { userMovedViewport = true })
+
+  function fitToViewport() {
+    if (userMovedViewport) return
+    const transform = fitGraphTransform(nodes.value, width, height)
+    svg.call(
+      zoom.transform,
+      d3.zoomIdentity.translate(transform.x, transform.y).scale(transform.k),
+    )
+  }
 
   const sim = d3
     .forceSimulation(nodes.value)
     .force('link', d3.forceLink(links).id((d) => d.uuid).distance(110))
     .force('charge', d3.forceManyBody().strength(-260))
     .force('center', d3.forceCenter(width / 2, height / 2))
+  simulation = sim
 
   const link = g
     .append('g')
     .selectAll('line')
     .data(links)
     .join('line')
-    .attr('stroke', '#c9cfdb')
-    .attr('stroke-width', 1.4)
+    .attr('stroke', '#aeb7c7')
+    .attr('stroke-opacity', 0.55)
+    .attr('stroke-width', 0.7)
+    .attr('vector-effect', 'non-scaling-stroke')
 
   const linkLabel = g
     .append('g')
@@ -152,15 +193,27 @@ function render() {
       .attr('x', (d) => (d.source.x + d.target.x) / 2)
       .attr('y', (d) => (d.source.y + d.target.y) / 2 - 4)
     node.attr('transform', (d) => `translate(${d.x},${d.y})`)
+    fitToViewport()
   })
+  sim.on('end', fitToViewport)
 }
 
 let previewTimer = null
-// 构建期间每 5s 刷新一次预览（每块完成即可见），结束后拉取正式数据并停止轮询
+let pollingVersion = 0
+// 构建期间持续刷新预览（每块完成即可见），结束后拉取正式数据并停止轮询。
 function syncPreviewPolling() {
-  clearInterval(previewTimer)
+  pollingVersion++
+  clearTimeout(previewTimer)
   previewTimer = null
-  if (props.graphStatus === 'building') previewTimer = setInterval(load, 5000)
+  if (props.building) {
+    // 请求完成后再安排下一轮，避免慢请求重叠并形成过期响应覆盖。
+    const version = pollingVersion
+    const poll = async () => {
+      await load()
+      if (version === pollingVersion && props.building) previewTimer = setTimeout(poll, 1500)
+    }
+    previewTimer = setTimeout(poll, 1500)
+  }
 }
 
 onMounted(() => {
@@ -168,18 +221,30 @@ onMounted(() => {
   syncPreviewPolling()
 })
 watch(
-  () => props.graphStatus,
+  () => props.building,
   () => {
     load()
     syncPreviewPolling()
   }
 )
 watch(() => props.reloadKey, load)
-onUnmounted(() => clearInterval(previewTimer))
+onUnmounted(() => {
+  pollingVersion++
+  clearTimeout(previewTimer)
+  loadVersion++
+  simulation?.stop()
+})
 </script>
 
 <style scoped>
 .graph-svg { border: 1px solid var(--border); border-radius: 8px; background: #fcfdff; }
+.graph-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.graph-stats {
+  display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.graph-stats.live { color: var(--ok); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
 .detail {
   margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: #fafbff;
 }

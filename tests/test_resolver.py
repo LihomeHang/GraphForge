@@ -92,3 +92,43 @@ async def test_relations_remapped_after_merge(mock_llm, mock_embeddings):
     person = persons[0]
     assert len(out.relations) == 1
     assert out.relations[0].source_node_uuid == person.uuid
+
+
+@pytest.mark.asyncio
+async def test_resolver_limits_similarity_candidates():
+    """候选对受 candidate_k 限制，避免实体两两 LLM 判定爆炸。"""
+    class CountingLLM(MockLLMClient):
+        async def complete(self, messages):
+            self.calls.append(messages)
+            return '{"same": false}'
+
+    llm = CountingLLM()
+    results = [
+        ExtractionResult(entities=[_mk(f"人{i}", type_="Person") for i in range(8)]),
+    ]
+    config = Config(
+        llm_provider="mock", neo4j_password="x", resolve_sim_threshold=0.5,
+        resolve_candidate_k=2,
+    )
+    await resolver.resolve(results, llm, _identical_embeddings(), config)
+    assert len(llm.calls) <= 2
+
+
+@pytest.mark.asyncio
+async def test_resolver_does_not_use_scalar_pairwise_cosine(monkeypatch):
+    """大图候选检索必须走批量向量计算，不能退回 Python O(n^2) 标量循环。"""
+    def fail_scalar_cosine(*_args, **_kwargs):
+        raise AssertionError("scalar pairwise cosine must not be used")
+
+    monkeypatch.setattr(resolver, "_cosine", fail_scalar_cosine)
+    results = [
+        ExtractionResult(entities=[_mk(f"实体{i}", type_="Entity") for i in range(64)]),
+    ]
+    config = Config(
+        llm_provider="mock",
+        neo4j_password="x",
+        resolve_sim_threshold=0.5,
+        resolve_candidate_k=2,
+    )
+
+    await resolver.resolve(results, MockLLMClient(), _identical_embeddings(), config)

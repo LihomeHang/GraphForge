@@ -14,6 +14,17 @@ async function request(method, path, body) {
   return data.data
 }
 
+const GRAPH_PAGE_SIZE = 500
+
+async function fetchAll(path) {
+  const items = []
+  for (let offset = 0; ; offset += GRAPH_PAGE_SIZE) {
+    const page = await request('GET', `${path}?offset=${offset}&limit=${GRAPH_PAGE_SIZE}`)
+    items.push(...page)
+    if (page.length < GRAPH_PAGE_SIZE) return items
+  }
+}
+
 export const api = {
   // 图谱
   listGraphs: () => request('GET', '/graphs'),
@@ -41,8 +52,17 @@ export const api = {
   getTask: (taskId) => request('GET', `/tasks/${taskId}`),
   latestTask: (id) => request('GET', `/tasks/by-graph/${id}/latest`),
   // 读取
-  nodes: (id) => request('GET', `/graphs/${id}/nodes?limit=500`),
-  edges: (id) => request('GET', `/graphs/${id}/edges?limit=500`),
+  nodes: (id, offset = 0, limit = GRAPH_PAGE_SIZE) =>
+    request('GET', `/graphs/${id}/nodes?offset=${offset}&limit=${limit}`),
+  edges: (id, offset = 0, limit = GRAPH_PAGE_SIZE) =>
+    request('GET', `/graphs/${id}/edges?offset=${offset}&limit=${limit}`),
+  graphData: async (id) => {
+    const [nodes, edges] = await Promise.all([
+      fetchAll(`/graphs/${id}/nodes`),
+      fetchAll(`/graphs/${id}/edges`),
+    ])
+    return { nodes, edges }
+  },
   preview: (id) => request('GET', `/graphs/${id}/preview`),
   // 搜索
   search: (id, query, topK = 10) =>

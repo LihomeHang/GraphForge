@@ -47,6 +47,10 @@ class FakeNeo4jStore:
         self.nodes.pop(graph_id, None)
         self.edges.pop(graph_id, None)
 
+    async def clear_graph_data(self, graph_id: str) -> None:
+        self.nodes.pop(graph_id, None)
+        self.edges.pop(graph_id, None)
+
     async def upsert_entities(self, entities, batch_size: int = 500) -> None:
         for e in entities:
             self.nodes.setdefault(e.graph_id, []).append(
@@ -176,6 +180,103 @@ def test_health(client):
     resp = client.get("/api/health")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+def test_graph_preview_returns_finished_chunk_results(client):
+    """实时预览合并已完成块，并生成可供 d3 直接连接的稳定端点 ID。"""
+    from app.models.graph import ExtractionResult, ExtractEntity, ExtractRelation
+    from app.pipeline.runner import PREVIEW_RESULTS
+
+    graph_id = client.post("/api/graphs", json={"name": "实时预览图"}).json()["data"]["graph_id"]
+    PREVIEW_RESULTS[graph_id] = [
+        ExtractionResult(
+            entities=[
+                ExtractEntity(name="张三", type="Person", summary="工程师"),
+                ExtractEntity(name="ACME", type="Organization", summary="公司"),
+            ],
+            relations=[
+                ExtractRelation(
+                    source="张三", target="ACME", type="WORKS_AT", fact="张三在 ACME 工作"
+                )
+            ],
+        )
+    ]
+    try:
+        r = client.get(f"/api/graphs/{graph_id}/preview")
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["source"] == "preview"
+        assert data["node_count"] == 2
+        assert data["edge_count"] == 1
+        assert data["edges"][0]["source_node_uuid"] == "张三"
+        assert data["edges"][0]["target_node_uuid"] == "acme"
+    finally:
+        PREVIEW_RESULTS.pop(graph_id, None)
+
+
+def test_graph_preview_keeps_relation_when_target_appears_in_later_chunk(client):
+    """关系端点可分布在不同抽取块中，预览合并后仍应展示该关系。"""
+    from app.models.graph import ExtractionResult, ExtractEntity, ExtractRelation
+    from app.pipeline.runner import PREVIEW_RESULTS
+
+    graph_id = client.post("/api/graphs", json={"name": "跨块关系图"}).json()["data"]["graph_id"]
+    PREVIEW_RESULTS[graph_id] = [
+        ExtractionResult(
+            entities=[ExtractEntity(name="张三", type="Person")],
+            relations=[
+                ExtractRelation(
+                    source="张三", target="ACME", type="WORKS_AT", fact="张三在 ACME 工作"
+                )
+            ],
+        ),
+        ExtractionResult(entities=[ExtractEntity(name="ACME", type="Organization")]),
+    ]
+    try:
+        data = client.get(f"/api/graphs/{graph_id}/preview").json()["data"]
+
+        assert data["node_count"] == 2
+        assert data["edge_count"] == 1
+    finally:
+        PREVIEW_RESULTS.pop(graph_id, None)
+
+
+def test_graph_preview_restores_persisted_results_after_restart(client):
+    """内存预览丢失时，接口应从 SQLite 恢复已完成块。"""
+    from app.api.graphs import _services
+    from app.pipeline.runner import PREVIEW_RESULTS
+
+    graph_id = client.post("/api/graphs", json={"name": "持久化预览图"}).json()["data"]["graph_id"]
+    svc = _services()
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    loop.run_until_complete(svc.tasks.reset_preview(graph_id, "task-persisted"))
+    loop.run_until_complete(
+        svc.tasks.put_preview_result(
+            graph_id,
+            "task-persisted",
+            0,
+            {
+                "entities": [
+                    {"name": "张三", "type": "Person"},
+                    {"name": "ACME", "type": "Organization"},
+                ],
+                "relations": [
+                    {
+                        "source": "张三",
+                        "target": "ACME",
+                        "type": "WORKS_AT",
+                        "fact": "张三在 ACME 工作",
+                    }
+                ],
+            },
+        )
+    )
+    loop.close()
+    PREVIEW_RESULTS.pop(graph_id, None)
+
+    data = client.get(f"/api/graphs/{graph_id}/preview").json()["data"]
+
+    assert data["node_count"] == 2
+    assert data["edge_count"] == 1
 
 
 def test_graph_crud_flow(client):
@@ -320,6 +421,49 @@ def test_upload_unsupported_type_rejected(client):
     assert r.json()["data"]["filenames"] == []
 
 
+def test_upload_can_replace_all_staged_documents(client):
+    import io
+
+    graph_id = client.post("/api/graphs", json={"name": "替换文档图"}).json()["data"]["graph_id"]
+    client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[
+            ("files", ("old-a.txt", io.BytesIO(b"old a"), "text/plain")),
+            ("files", ("old-b.txt", io.BytesIO(b"old b"), "text/plain")),
+        ],
+    )
+
+    response = client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[("files", ("new.txt", io.BytesIO(b"new"), "text/plain"))],
+        data={"replace_existing": "true"},
+    )
+
+    assert response.status_code == 200
+    listed = client.get(f"/api/graphs/{graph_id}/documents").json()["data"]["filenames"]
+    assert listed == ["new.txt"]
+
+
+def test_failed_replacement_upload_keeps_existing_documents(client):
+    import io
+
+    graph_id = client.post("/api/graphs", json={"name": "安全替换文档图"}).json()["data"]["graph_id"]
+    client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[("files", ("existing.txt", io.BytesIO(b"existing"), "text/plain"))],
+    )
+
+    response = client.post(
+        f"/api/graphs/{graph_id}/documents",
+        files=[("files", ("invalid.exe", io.BytesIO(b"invalid"), "application/octet-stream"))],
+        data={"replace_existing": "true"},
+    )
+
+    assert response.status_code == 400
+    listed = client.get(f"/api/graphs/{graph_id}/documents").json()["data"]["filenames"]
+    assert listed == ["existing.txt"]
+
+
 def test_ontology_from_staged_files(client):
     """基于暂存多文件生成本体；暂存区为空时返回 400。"""
     import io
@@ -349,6 +493,30 @@ def test_settings_get_and_update(client):
     data = r.json()["data"]
     assert data["llm_provider"] == "mock"
     assert data["llm_api_key_set"] is False
+    assert data["embedding_provider"] == "auto"
+    assert data["chunk_size"] == 1200
+    assert data["chunk_overlap"] == 100
+    assert data["llm_concurrency"] == 2
+    assert data["extract_batch_size"] == 4
+    assert data["resolve_candidate_k"] == 8
+
+    # 处理参数可持久化并热生效，不依赖容器重启。
+    r = client.put(
+        "/api/settings",
+        json={
+            "embedding_provider": "local",
+            "chunk_size": 1600,
+            "chunk_overlap": 120,
+            "llm_concurrency": 6,
+            "extract_batch_size": 3,
+            "resolve_candidate_k": 5,
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["embedding_provider"] == "local"
+    assert (data["chunk_size"], data["chunk_overlap"], data["llm_concurrency"]) == (1600, 120, 6)
+    assert (data["extract_batch_size"], data["resolve_candidate_k"]) == (3, 5)
 
     # 切 openai 但缺 api_key（env 也没有）→ 400，配置不变
     r = client.put(
@@ -364,7 +532,7 @@ def test_settings_get_and_update(client):
         json={
             "llm_provider": "openai",
             "llm_base_url": "http://x/v1",
-            "llm_api_key": "sk-secret-1234567890",
+            "llm_api_key": "test-key-secret-1234567890",
             "llm_model": "test-model",
         },
     )
@@ -373,7 +541,7 @@ def test_settings_get_and_update(client):
     assert data["llm_provider"] == "openai"
     assert data["llm_api_key_set"] is True
     assert data["llm_api_key_masked"].endswith("7890")
-    assert "sk-secret-1234567890" not in r.text  # 掩码，不回显完整 key
+    assert "test-key-secret-1234567890" not in r.text  # 掩码，不回显完整 key
     from app.api.graphs import _services
 
     svc = _services()
@@ -413,8 +581,11 @@ def test_settings_persist_and_overrides(tmp_path):
             {
                 "LLM_PROVIDER": "openai",
                 "LLM_BASE_URL": "http://x/v1",
-                "LLM_API_KEY": "sk-persist-98765432",
+                "LLM_API_KEY": "test-key-persist-98765432",
                 "LLM_MODEL": "m1",
+                "CHUNK_SIZE": "1800",
+                "CHUNK_OVERLAP": "150",
+                "LLM_CONCURRENCY": "10",
             }
         )
         # 模拟重启：新连接重新读回
@@ -428,7 +599,8 @@ def test_settings_persist_and_overrides(tmp_path):
     cfg = base.with_overrides(overrides)
     assert cfg.llm_provider == "openai"
     assert cfg.llm_model == "m1"
-    assert cfg.llm_api_key == "sk-persist-98765432"
+    assert cfg.llm_api_key == "test-key-persist-98765432"
+    assert (cfg.chunk_size, cfg.chunk_overlap, cfg.llm_concurrency) == (1800, 150, 10)
     # 未覆盖项保持 env 缺省；frozen dataclass 不被原地修改
     assert cfg.neo4j_password == "t"
     assert base.llm_provider == "mock"

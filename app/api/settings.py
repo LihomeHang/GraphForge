@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.config import Config, ConfigError
 from app.llm.client import OpenAILLMClient
-from app.llm.embeddings import OpenAIEmbeddingClient
+from app.llm.embeddings import FallbackEmbeddingClient, LocalHashEmbeddingClient, build_embedding_client
 from app.models.api import SettingsUpdateRequest
 from app.pipeline.runner import Services
 from app.storage.settings import SettingsStore
@@ -22,7 +22,10 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 # 允许通过 Web 修改的配置项（环境变量名风格，与 Config.with_overrides 对应）
 ALLOWED_KEYS = [
     "LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TEMPERATURE",
-    "EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL", "EMBEDDING_DIM",
+    "EMBEDDING_PROVIDER", "EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
+    "EMBEDDING_DIM", "LOCAL_EMBEDDING_DIM",
+    "CHUNK_SIZE", "CHUNK_OVERLAP", "LLM_CONCURRENCY",
+    "EXTRACT_BATCH_SIZE", "RESOLVE_CANDIDATE_K",
 ]
 
 _TEST_TIMEOUT = 20.0  # 连通性测试单次超时（秒）
@@ -63,10 +66,19 @@ def _payload(svc: Services) -> dict:
         "llm_model": cfg.llm_model,
         "llm_temperature": cfg.llm_temperature,
         "embedding_base_url": cfg.embedding_base_url,
+        "embedding_provider": cfg.embedding_provider,
         "embedding_api_key_set": bool(cfg.embedding_api_key or cfg.llm_api_key),
         "embedding_model": cfg.embedding_model,
         "embedding_dim": cfg.embedding_dim,
-        "embedding_uses_llm_config": not (cfg.embedding_base_url or cfg.embedding_api_key),
+        "local_embedding_dim": cfg.local_embedding_dim,
+        "embedding_uses_llm_config": cfg.embedding_provider != "local" and not (
+            cfg.embedding_base_url or cfg.embedding_api_key
+        ),
+        "chunk_size": cfg.chunk_size,
+        "chunk_overlap": cfg.chunk_overlap,
+        "llm_concurrency": cfg.llm_concurrency,
+        "extract_batch_size": cfg.extract_batch_size,
+        "resolve_candidate_k": cfg.resolve_candidate_k,
         "active_builds": svc.registry.has_running(),
     }
 
@@ -87,12 +99,26 @@ def _updates_to_overrides(req: SettingsUpdateRequest) -> dict[str, str]:
         out["LLM_TEMPERATURE"] = str(updates["llm_temperature"])
     if updates.get("embedding_base_url") is not None:
         out["EMBEDDING_BASE_URL"] = updates["embedding_base_url"]
+    if updates.get("embedding_provider") is not None:
+        out["EMBEDDING_PROVIDER"] = updates["embedding_provider"]
     if updates.get("embedding_api_key"):
         out["EMBEDDING_API_KEY"] = updates["embedding_api_key"]
     if updates.get("embedding_model") is not None:
         out["EMBEDDING_MODEL"] = updates["embedding_model"]
     if updates.get("embedding_dim") is not None:
         out["EMBEDDING_DIM"] = str(updates["embedding_dim"])
+    if updates.get("local_embedding_dim") is not None:
+        out["LOCAL_EMBEDDING_DIM"] = str(updates["local_embedding_dim"])
+    if updates.get("chunk_size") is not None:
+        out["CHUNK_SIZE"] = str(updates["chunk_size"])
+    if updates.get("chunk_overlap") is not None:
+        out["CHUNK_OVERLAP"] = str(updates["chunk_overlap"])
+    if updates.get("llm_concurrency") is not None:
+        out["LLM_CONCURRENCY"] = str(updates["llm_concurrency"])
+    if updates.get("extract_batch_size") is not None:
+        out["EXTRACT_BATCH_SIZE"] = str(updates["extract_batch_size"])
+    if updates.get("resolve_candidate_k") is not None:
+        out["RESOLVE_CANDIDATE_K"] = str(updates["resolve_candidate_k"])
     return {k: v for k, v in out.items() if k in ALLOWED_KEYS}
 
 
@@ -162,12 +188,18 @@ async def test_settings(req: SettingsUpdateRequest):
             await client.close()
 
     if cfg.llm_provider == "openai":
-        emb = OpenAIEmbeddingClient(cfg)
+        emb = build_embedding_client(cfg)
         try:
             dim = await asyncio.wait_for(emb.dim(), timeout=_TEST_TIMEOUT)
+            if isinstance(emb, LocalHashEmbeddingClient):
+                message = f"本地哈希向量可用（维度 {dim}，无网络请求）"
+            elif isinstance(emb, FallbackEmbeddingClient) and emb.fallback_active:
+                message = f"远程不可用，已启用本地哈希向量（维度 {dim}）"
+            else:
+                message = f"嵌入模型 {cfg.embedding_model} 可用（维度 {dim}）"
             result["embedding"] = {
                 "ok": True,
-                "message": f"嵌入模型 {cfg.embedding_model} 可用（维度 {dim}）",
+                "message": message,
                 "dim": dim,
             }
         except asyncio.TimeoutError:

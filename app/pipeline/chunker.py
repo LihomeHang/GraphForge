@@ -8,8 +8,8 @@ _PARA_RE = re.compile(r"\n\s*\n")
 
 def chunk_text(
     text: str,
-    chunk_size: int = 500,
-    chunk_overlap: int = 50,
+    chunk_size: int = 1200,
+    chunk_overlap: int = 100,
 ) -> list[str]:
     """把文本切成带重叠的块。优先段落边界，其次换行边界，最后硬切。
 

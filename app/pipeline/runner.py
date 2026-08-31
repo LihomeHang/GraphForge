@@ -64,6 +64,9 @@ class BuildParams:
     files: list[tuple[bytes, str]]
     purpose: str = ""
     ontology: dict | None = None  # 内联本体（来自同步生成结果）
+    ontology_mode: str = "strict"
+    replace_existing: bool = True
+    documents_are_chunks: bool = False
     chunk_size: int | None = None
     chunk_overlap: int | None = None
 
@@ -97,13 +100,24 @@ async def run_build(task_id: str, params: BuildParams, svc: Services) -> None:
         task.error = "任务被取消"
         emit_task_log(task.error)
         await svc.tasks.update_task(task)
+        await _mark_graph_failed(params.graph_id, svc)
         raise
     except Exception as e:
         logger.exception("构建任务 %s 失败", task_id)
         task.status = TaskStatus.failed
-        task.error = str(e)
-        emit_task_log(f"任务失败: {type(e).__name__}: {e}")
+        detail = str(e).strip()
+        task.error = f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+        emit_task_log(f"任务失败: {task.error}")
         await svc.tasks.update_task(task)
+        await _mark_graph_failed(params.graph_id, svc)
+
+
+async def _mark_graph_failed(graph_id: str, svc: Services) -> None:
+    """任务状态已经落库后，再尽力同步图谱状态，避免存储故障覆盖原始异常。"""
+    try:
+        await svc.neo4j.set_graph_status(graph_id, "failed")
+    except Exception:  # noqa: BLE001
+        logger.exception("更新图谱 %s 的失败状态时出错", graph_id)
 
 
 def _attach_log_sink(task: Task, svc: Services) -> None:
@@ -118,6 +132,23 @@ def _attach_log_sink(task: Task, svc: Services) -> None:
     set_task_log_sink(_sink)
 
 
+def _parse_and_chunk_documents(params: BuildParams, cfg: Config) -> tuple[str, list[str]]:
+    """Parse staged files and optionally preserve one pre-chunked file per chunk."""
+    texts = [parser.parse_bytes(file_bytes, filename) for file_bytes, filename in params.files]
+    nonempty = [text for text in texts if text.strip()]
+    text = "\n\n".join(nonempty)
+    if not text.strip():
+        raise ValueError("文档内容为空，无法构建图谱")
+    if params.documents_are_chunks:
+        return text, nonempty
+    chunk_size = params.chunk_size or cfg.chunk_size
+    chunk_overlap = params.chunk_overlap if params.chunk_overlap is not None else cfg.chunk_overlap
+    chunks = chunker.chunk_text(text, chunk_size, chunk_overlap)
+    if not chunks:
+        raise ValueError("文档内容为空，无法构建图谱")
+    return text, chunks
+
+
 async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     cfg = svc.config
     _attach_log_sink(task, svc)
@@ -129,12 +160,7 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     task.message = f"解析 {len(params.files)} 个文档"
     emit_task_log(task.message)
     await svc.tasks.update_task(task)
-    texts = []
-    for file_bytes, filename in params.files:
-        texts.append(parser.parse_bytes(file_bytes, filename))
-    text = "\n\n".join(t for t in texts if t.strip())
-    if not text.strip():
-        raise ValueError("文档内容为空，无法构建图谱")
+    text, chunks = _parse_and_chunk_documents(params, cfg)
 
     # ② 切块
     task.status = TaskStatus.chunking
@@ -142,11 +168,6 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     task.progress = 0.10
     task.message = "切块"
     await svc.tasks.update_task(task)
-    chunk_size = params.chunk_size or cfg.chunk_size
-    chunk_overlap = params.chunk_overlap if params.chunk_overlap is not None else cfg.chunk_overlap
-    chunks = chunker.chunk_text(text, chunk_size, chunk_overlap)
-    if not chunks:
-        raise ValueError("文档内容为空，无法构建图谱")
     emit_task_log(f"切块: {len(chunks)} 块")
 
     # ③ 本体
@@ -154,7 +175,11 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     task.stage = "ontology"
     task.progress = 0.15
     task.message = "生成本体"
-    emit_task_log("开始生成本体" if not params.ontology else "使用预览本体")
+    if not params.ontology:
+        emit_task_log("开始生成本体")
+    else:
+        mode_label = "软约束" if params.ontology_mode == "soft" else "严格约束"
+        emit_task_log(f"使用预览本体（{mode_label}）")
     await svc.tasks.update_task(task)
     if params.ontology:
         onto = ontology_mod.normalize_ontology(params.ontology, cfg)
@@ -172,9 +197,16 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     task.progress = 0.20
     task.message = f"抽取 {len(chunks)} 块"
     PREVIEW_RESULTS[params.graph_id] = []  # 重置实时预览缓冲
+    await svc.tasks.reset_preview(params.graph_id, task.task_id)
 
-    def _on_chunk_result(_i: int, result) -> None:
+    async def _on_chunk_result(_i: int, result) -> None:
         PREVIEW_RESULTS.setdefault(params.graph_id, []).append(result)
+        await svc.tasks.put_preview_result(
+            params.graph_id,
+            task.task_id,
+            _i,
+            result.model_dump(),
+        )
 
     async def _extract_progress(done: int, total: int) -> None:
         task.progress = 0.20 + 0.55 * (done / total)
@@ -184,6 +216,7 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     results, warnings = await extractor.extract_chunks(
         svc.llm, chunks, onto, onto_json, params.graph_id, cfg, svc.tasks, _extract_progress,
         chunk_result_cb=_on_chunk_result,
+        ontology_mode=params.ontology_mode,
     )
     task.message = f"抽取完成{'（' + str(len(warnings)) + ' 块失败跳过）' if warnings else ''}"
     emit_task_log(task.message)
@@ -206,7 +239,13 @@ async def _run(task: Task, params: BuildParams, svc: Services) -> None:
     emit_task_log(task.message)
     await svc.tasks.update_task(task)
     node_count, edge_count = await writer.write_all(
-        resolution, params.graph_id, svc.neo4j, svc.qdrant, svc.embeddings, cfg
+        resolution,
+        params.graph_id,
+        svc.neo4j,
+        svc.qdrant,
+        svc.embeddings,
+        cfg,
+        replace_existing=params.replace_existing,
     )
 
     task.status = TaskStatus.completed

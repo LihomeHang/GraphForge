@@ -8,7 +8,8 @@
 
 - **文档解析**：pdf（PyMuPDF）/ Markdown / 纯文本，UTF-8 / GBK 自动识别
 - **本体生成**：按分析目的由 LLM 设计实体与关系类型，自动规范化（实体名 PascalCase、关系名 SCREAMING_SNAKE_CASE、类型白名单、MiroFish 风格兜底）
-- **抽取管道**：段落优先切块（默认 500 字 / 50 重叠）→ 并发抽取（信号量限流）→ 块级失败隔离 → JSON 修复重试 → SQLite 块级缓存（幂等重跑不重复计费）
+- **双本体模式**：`strict` 将本体作为白名单；`soft` 将本体作为优先分类，并用 `Entity` / `RELATED_TO` 保留未覆盖的知识与事实（MiroFish 兼容模式）
+- **抽取管道**：段落优先切块（默认 1200 字 / 100 重叠）→ 并发抽取（默认 8 路、信号量限流）→ 块级失败隔离 → JSON 修复重试 → SQLite 块级缓存（幂等重跑不重复计费）
 - **消歧合并**：casefold 精确合并 → 同类型嵌入相似候选对交 LLM 判定（保守失败不合并）→ 并查集合并 + summary 融合
 - **存储**：Neo4j 5.x（属性存 `attributes_json`）+ Qdrant（每图一个 collection，节点/边混合向量）
 - **语义搜索**：查询向量化 → 节点/事实混合检索，边命中自动补端点实体名
@@ -44,6 +45,16 @@ docker compose up -d --build
 
 对应 API：`GET /api/settings`（掩码查看）/ `PUT /api/settings`（更新）/ `POST /api/settings/test`（连通性测试，不保存）
 
+## 构建模式
+
+`POST /api/graphs/{graph_id}/build` 支持以下兼容参数：
+
+- `ontology_mode`: `strict`（默认）或 `soft`；软模式不会丢弃自定义本体之外的实体和事实
+- `replace_existing`: 默认 `true`，新构建在写入前替换已有 Neo4j/Qdrant 数据，避免重建累积
+- `documents_are_chunks`: 默认 `false`；设为 `true` 时每个暂存文件直接作为一个抽取块，不再二次切分
+
+上传文档时可向 `POST /api/graphs/{graph_id}/documents` 传 multipart 字段 `replace_existing=true`。服务会先校验全部新文件，再整体替换暂存输入。MiroFish 适配器会逐 episode 上传并启用上述软本体参数。
+
 ## 本地开发
 
 ```bash
@@ -75,11 +86,16 @@ uv run pytest tests -q
 | `LLM_PROVIDER` | `openai`（兼容接口）或 `mock` |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | LLM 端点配置 |
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` | 缺省复用 LLM 配置 |
+| `EMBEDDING_PROVIDER` | `auto`（远程失败切本地）、`remote`（仅远程）或 `local`（纯本地无模型） |
+| `EMBEDDING_BATCH_SIZE` / `EMBEDDING_CONCURRENCY` / `EMBEDDING_MAX_RETRIES` | 嵌入请求分批、并发和瞬时故障重试（128 / 4 / 2） |
+| `LOCAL_EMBEDDING_DIM` | 本地特征哈希向量维度（1024） |
 | `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | Neo4j 连接 |
 | `QDRANT_URL` | Qdrant 地址 |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 切块参数（500 / 50） |
-| `LLM_CONCURRENCY` | 抽取并发（4） |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 切块参数（1200 / 100，可在系统设置中热调整） |
+| `LLM_CONCURRENCY` | 抽取并发（8，可在系统设置中热调整） |
+| `EXTRACT_BATCH_SIZE` | 每次 LLM 请求处理的块数（4，可在系统设置中热调整） |
 | `RESOLVE_SIM_THRESHOLD` | 消歧嵌入相似阈值（0.85） |
+| `RESOLVE_CANDIDATE_K` | 每个实体最多进入 LLM 消歧的近邻数（8） |
 | `EMBEDDING_DIM` | 嵌入维度；缺省自动探测（mock 模式为 32） |
 | `QDRANT_API_KEY` | Qdrant 开启鉴权时必填 |
 | `DATA_DIR` | SQLite 任务/缓存目录（`./data`） |
