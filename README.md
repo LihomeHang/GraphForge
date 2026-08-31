@@ -55,6 +55,8 @@ docker compose up -d --build
 
 上传文档时可向 `POST /api/graphs/{graph_id}/documents` 传 multipart 字段 `replace_existing=true`。服务会先校验全部新文件，再整体替换暂存输入。MiroFish 适配器会逐 episode 上传并启用上述软本体参数。
 
+MiroFish 侧需要修改的文件、适配器行为、Docker 配置和验证步骤见 [MiroFish 集成要求](./MIROFISH-INTEGRATION-REQUIREMENTS.md)。
+
 ## 本地开发
 
 ```bash
